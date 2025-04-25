@@ -1,0 +1,1225 @@
+const TelegramBot = require('node-telegram-bot-api');
+const { GoogleSpreadsheet } = require('google-spreadsheet');
+const moment = require('moment');
+
+// Configuración de variables de entorno
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7754946488:AAE6XjHw18y8b73W6k_dGXk92mgYwn2-yhU';
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1CNyD_seHZZyB-2NPusYEpNGF8m5LzUz87RHIYitfnAU';
+
+// Configuración de credenciales de Google
+const GOOGLE_CREDENTIALS = process.env.GOOGLE_CREDENTIALS 
+  ? JSON.parse(process.env.GOOGLE_CREDENTIALS)
+  : require('./credentials.json');
+
+const bot = new TelegramBot(TOKEN, { polling: true });
+
+const estados = {};
+let productosData = [];
+let direccionesData = [];
+
+// Función para normalizar texto
+function normalizar(texto) {
+  return texto.toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w\s-]/gi, ' ')  // Preservar guiones y espacios
+    .trim()
+    .replace(/\s+/g, ' ')        // Normalizar espacios múltiples
+    .replace(/15-40/g, '15w40')
+    .replace(/15w-40/g, '15w40')
+    .replace(/5w-30/g, '5w30')
+    .replace(/80-90/g, '80w90')
+    .replace(/85-140/g, '85w140');
+}
+
+// Función de similitud de texto simplificada pero efectiva
+function obtenerSimilitud(str1, str2) {
+  const s1 = normalizar(str1);
+  const s2 = normalizar(str2);
+  
+  // Si alguna cadena está vacía, retornar 0
+  if (!s1 || !s2) return 0;
+
+  // Dividir en palabras y filtrar palabras vacías
+  const words1 = s1.split(' ').filter(w => w.length > 0);
+  const words2 = s2.split(' ').filter(w => w.length > 0);
+  
+  // Contar coincidencias
+  let matches = 0;
+  
+  for (const word1 of words1) {
+    // Coincidencia exacta
+    if (words2.includes(word1)) {
+      matches += 1;
+      continue;
+    }
+    
+    // Coincidencia parcial
+    for (const word2 of words2) {
+      // Coincidencia especial para SAE y grados
+      if ((word1 === 'sae' && /^\d+w\d+$/.test(word2)) ||
+          (/^\d+w\d+$/.test(word1) && word1 === word2)) {
+        matches += 1;
+        break;
+      }
+      
+      // Coincidencia parcial si una palabra contiene a la otra
+      if (word2.includes(word1) || word1.includes(word2)) {
+        matches += 0.5;
+        break;
+      }
+    }
+  }
+
+  // Calcular score final
+  return matches / Math.max(words1.length, 1);
+}
+
+// Función para filtrar resultados simplificada
+function filtrarResultados(resultados, query) {
+  // Filtrar por un umbral base más permisivo
+  const filtrados = resultados.filter(r => r.score > 0.2);
+  
+  // Ordenar por score
+  const ordenados = filtrados.sort((a, b) => b.score - a.score);
+  
+  // Retornar hasta 10 resultados
+  return ordenados.slice(0, 10);
+}
+
+// Función para determinar la especificidad de la búsqueda
+function obtenerEspecificidad(query) {
+  const normalizado = normalizar(query);
+  let especificidad = 0;
+
+  // Si contiene un grado de viscosidad específico
+  if (/\d+w\d+|\d+-\d+/.test(normalizado)) {
+    especificidad += 0.4;
+  }
+
+  // Si contiene "sae"
+  if (normalizado.includes('sae')) {
+    especificidad += 0.2;
+  }
+
+  // Si contiene una marca específica
+  const marcas = ['mobil', 'shell', 'chevron', 'delo', 'rotella', 'mistyk', 'black'];
+  if (marcas.some(marca => normalizado.includes(marca))) {
+    especificidad += 0.3;
+  }
+
+  // Por cada palabra adicional (más específico)
+  const palabras = normalizado.split(' ').filter(p => p.length > 2);
+  especificidad += Math.min(0.1 * (palabras.length - 1), 0.3);
+
+  return Math.min(especificidad, 1);
+}
+
+// Cargar datos iniciales
+async function cargarDatos() {
+  try {
+    const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+    await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
+    await doc.loadInfo();
+
+    // Cargar productos
+    const catalogo = doc.sheetsByTitle['Catalogo'];
+    const productos = await catalogo.getRows();
+    productosData = productos.map(row => ({
+      codigo: row['Product/Service'],
+      memo: row['Memo/Description'],
+      otra: row['otra descripcion'],
+      full: row['Product/Service full name']
+    })).filter(p => p.memo);
+
+    // Cargar direcciones
+    const direccionesSheet = doc.sheetsByTitle['Direcciones'];
+    const direcciones = await direccionesSheet.getRows();
+    direccionesData = direcciones.map(row => ({
+      nombre: row['Customer full name'],
+      direccion: row['Bill address']
+    })).filter(d => d.nombre && d.direccion);
+
+    console.log('Datos cargados exitosamente');
+  } catch (error) {
+    console.error('Error al cargar datos:', error);
+  }
+}
+
+// Buscar dirección
+function buscarDireccion(cliente) {
+  const mejor = direccionesData.map(dir => {
+    return {
+      ...dir,
+      score: obtenerSimilitud(cliente, dir.nombre)
+    };
+  }).filter(d => d.score > 0).sort((a, b) => b.score - a.score);
+
+  return mejor.length > 0 ? mejor[0].direccion : '';
+}
+
+// Guardar nuevo pedido
+async function guardarEnSheets(data) {
+  const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+  await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
+  await doc.loadInfo();
+  const sheetPedidos = doc.sheetsByIndex[0];
+  await sheetPedidos.addRow({
+    'Nombre del Cliente': data.nombre,
+    'Productos': data.productos.join('\n'),
+    'Cantidad': data.cantidades.join('\n'),
+    'Fecha de Despacho': data.fecha,
+    'Notas': data.nota || '',
+    'Usuario': data.usuario,
+    'codigo': data.codigos.join('\n')
+  });
+
+  const hojaCircuit = doc.sheetsByTitle['Circuit'];
+  await hojaCircuit.addRow({
+    'Address/Company Name': data.nombre,
+    'Address line 1': data.direccionManual || buscarDireccion(data.nombre),
+    'Internal notes': data.productos.map((p, i) => `${p} (${data.cantidades[i]})`).join(', '),
+    'seller': data.usuario,
+    'Driver (email or phone number)': ''
+  });
+}
+
+// Obtener pedidos del usuario
+async function obtenerPedidosUsuario(usuario) {
+  const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+  await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
+  await doc.loadInfo();
+  const sheetPedidos = doc.sheetsByIndex[0];
+  
+  const rows = await sheetPedidos.getRows();
+  
+  return rows
+    .map((row, index) => ({
+      rowIndex: index,
+      nombre: row['Nombre del Cliente'],
+      fecha: row['Fecha de Despacho'],
+      usuario: row['Usuario']
+    }))
+    .filter(p => p.usuario === usuario);
+}
+
+// Eliminar pedido
+async function eliminarPedido(rowIndex) {
+  const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+  await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
+  await doc.loadInfo();
+  const sheetPedidos = doc.sheetsByIndex[0];
+  const rows = await sheetPedidos.getRows();
+  if (rowIndex >= 0 && rowIndex < rows.length) {
+    await rows[rowIndex].delete();
+  } else {
+    throw new Error(`Índice inválido: ${rowIndex}`);
+  }
+}
+
+// Función auxiliar para enviar mensajes largos
+async function enviarMensajeLargo(chatId, texto, options = {}) {
+  const MAX_LENGTH = 4000; // Un poco menos que el límite de Telegram para estar seguros
+  
+  if (texto.length <= MAX_LENGTH) {
+    return bot.sendMessage(chatId, texto, options);
+  }
+
+  // Dividir el texto en partes
+  let partes = [];
+  let currentPart = '';
+  const lineas = texto.split('\n');
+
+  for (const linea of lineas) {
+    if (currentPart.length + linea.length + 1 > MAX_LENGTH) {
+      partes.push(currentPart);
+      currentPart = linea;
+    } else {
+      currentPart += (currentPart ? '\n' : '') + linea;
+    }
+  }
+  if (currentPart) {
+    partes.push(currentPart);
+  }
+
+  // Enviar cada parte
+  for (let i = 0; i < partes.length; i++) {
+    const esPrimeraParte = i === 0;
+    const esUltimaParte = i === partes.length - 1;
+    
+    let mensaje = partes[i];
+    if (!esPrimeraParte) {
+      mensaje = '(continuación...)\n\n' + mensaje;
+    }
+    if (!esUltimaParte) {
+      mensaje += '\n\n(continúa...)';
+    }
+    
+    // Solo usar las opciones de formato en la última parte si hay botones
+    const messageOptions = esUltimaParte ? options : { parse_mode: options.parse_mode };
+    await bot.sendMessage(chatId, mensaje, messageOptions);
+  }
+}
+
+// Funciones auxiliares para manejar fechas y productos
+function procesarFecha(texto) {
+  const fechaHoy = new Date();
+  const anioHoy = fechaHoy.getFullYear();
+  const [mesPedido, diaPedido] = texto.split('/');
+
+  if (!mesPedido || !diaPedido || 
+      isNaN(mesPedido) || isNaN(diaPedido) || 
+      mesPedido < 1 || mesPedido > 12 || 
+      diaPedido < 1 || diaPedido > 31) {
+    return { error: '❌ Fecha inválida. Usa el formato MM/DD.' };
+  }
+
+  const fechaDespacho = new Date(
+    `${anioHoy}-${mesPedido.padStart(2, '0')}-${diaPedido.padStart(2, '0')}`
+  );
+  
+  if (isNaN(fechaDespacho.getTime())) {
+    return { error: '❌ Fecha inválida. Usa el formato MM/DD.' };
+  }
+
+  return {
+    fecha: `${mesPedido.padStart(2, '0')}/${diaPedido.padStart(2, '0')}/${anioHoy}`,
+    error: null
+  };
+}
+
+function eliminarProducto(indice, productos, cantidades, codigos) {
+  if (isNaN(indice) || indice < 0 || indice >= productos.length) {
+    return { error: '❌ Número de producto inválido.' };
+  }
+
+  const eliminado = productos[indice];
+  productos.splice(indice, 1);
+  cantidades.splice(indice, 1);
+  codigos.splice(indice, 1);
+
+  return { eliminado, error: null };
+}
+
+// Helper function to create pedido object
+function crearObjetoPedido(pedidoSeleccionado, nuevasFechas = {}) {
+  return {
+    rowIndex: pedidoSeleccionado.rowIndex,
+    nombre: pedidoSeleccionado.nombre,
+    productos: pedidoSeleccionado.productos,
+    cantidades: pedidoSeleccionado.cantidades,
+    fecha: nuevasFechas.fecha || pedidoSeleccionado.fecha,
+    nota: pedidoSeleccionado.nota || '',
+    usuario: pedidoSeleccionado.usuario,
+    codigos: pedidoSeleccionado.codigos || []
+  };
+}
+
+// Manejador de mensajes
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const texto = msg.text?.trim();
+  const usuario = msg.from.username || msg.from.first_name || 'Desconocido';
+
+  // Código de reinicio
+  if (texto === '000') {
+    delete estados[chatId];
+    return bot.sendMessage(chatId, '🔄 Bot reiniciado.\n\n👋 ¿Qué deseas hacer?\n1️⃣ Hacer un nuevo pedido (paso a paso)\n2️⃣ Modificar un pedido viejo\n3️⃣ Nuevo pedido rápido');
+  }
+
+  if (!estados[chatId]) {
+    estados[chatId] = { paso: 'inicio' };
+    return bot.sendMessage(chatId, '👋 ¿Qué deseas hacer?\n1️⃣ Hacer un nuevo pedido (paso a paso)\n2️⃣ Modificar un pedido viejo\n3️⃣ Nuevo pedido rápido');
+  }
+
+  const estado = estados[chatId];
+
+  // Antes del switch, declaramos las variables que se usarán en múltiples casos
+  let indiceAEliminar;
+  let resultadoEliminar;
+  let resultadoFecha;
+
+  switch (estado.paso) {
+    case 'inicio':
+      if (texto === '1') {
+        estados[chatId] = { paso: 'nombre', productos: [], cantidades: [], codigos: [] };
+        bot.sendMessage(chatId, '📝 ¿Cuál es el nombre del cliente?');
+      } else if (texto === '2') {
+        estado.paso = 'cargandoPedidos';
+        const pedidos = await obtenerPedidosUsuario(usuario);
+        if (pedidos.length === 0) {
+          delete estados[chatId];
+          return bot.sendMessage(chatId, '❌ No tienes pedidos anteriores para modificar.');
+        }
+        estado.pedidos = pedidos;
+        const lista = pedidos.map((p, i) => `${i + 1}. ${p.nombre} - ${p.fecha}`).join('\n');
+        estado.paso = 'seleccionarPedido';
+        bot.sendMessage(chatId, `📋 Tus pedidos:\n${lista}\n\nSelecciona el número del pedido a modificar:`);
+      } else if (texto === '3') {
+        estados[chatId] = { 
+          paso: 'pedidoRapido',
+          productos: [],
+          cantidades: [],
+          codigos: []
+        };
+        bot.sendMessage(chatId, 
+          '📝 Envía el pedido completo en este formato:\n\n' +
+          'Nombre del Cliente\n' +
+          '* Producto1 cantidad\n' +
+          '* Producto2 cantidad\n' +
+          '* Producto3 cantidad\n' +
+          'Dirección (opcional)\n\n' +
+          'Ejemplo:\n' +
+          'A&W Truck Service\n' +
+          '* Paleta de Mistyk 1\n' +
+          '* Delo 4\n' +
+          '* Rotella T4 8\n' +
+          '5401 Bernal Dr, Dallas, TX 75212'
+        );
+      }
+      break;
+
+    case 'pedidoRapido':
+      try {
+        // Dividir el texto en líneas
+        const lineas = texto.split('\n').map(l => l.trim()).filter(l => l);
+        if (lineas.length < 2) {
+          return bot.sendMessage(chatId, '❌ Formato inválido. Necesito al menos el nombre del cliente y un producto.');
+        }
+
+        // Primera línea es el nombre del cliente
+        const nombre = lineas[0];
+        let direccionManual = '';
+        let productos = [];
+        let cantidades = [];
+        let codigos = [];
+        let productosNoEncontrados = [];
+
+        // Procesar líneas de productos y última línea como dirección si no empieza con *
+        for (let i = 1; i < lineas.length; i++) {
+          const linea = lineas[i];
+          if (linea.startsWith('*')) {
+            // Es un producto
+            const productoTexto = linea.substring(1).trim();
+            const matches = productoTexto.match(/(.+?)\s+(\d+)$/);
+            
+            let nombreProducto, cantidad;
+            if (matches) {
+              nombreProducto = matches[1].trim();
+              cantidad = matches[2];
+            } else {
+              nombreProducto = productoTexto;
+              cantidad = '1';
+            }
+
+            // Buscar el producto en el catálogo usando la función de similitud
+            const encontrados = productosData.map(p => {
+              const score = Math.max(
+                obtenerSimilitud(nombreProducto, p.memo),
+                obtenerSimilitud(nombreProducto, p.otra || ''),
+                obtenerSimilitud(nombreProducto, p.full || '')
+              );
+              return { ...p, score };
+            }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
+
+            if (encontrados.length > 0 && encontrados[0].score > 0.3) { // Umbral de similitud
+              productos.push(encontrados[0].memo);
+              cantidades.push(cantidad);
+              codigos.push(encontrados[0].codigo);
+            } else {
+              productosNoEncontrados.push(nombreProducto);
+              productos.push(nombreProducto); // Mantener el nombre original
+              cantidades.push(cantidad);
+              codigos.push('');
+            }
+          } else if (i === lineas.length - 1) {
+            // Última línea y no es producto, asumimos dirección
+            direccionManual = linea;
+          }
+        }
+
+        if (productos.length === 0) {
+          return bot.sendMessage(chatId, '❌ No se encontraron productos válidos en el formato correcto.');
+        }
+
+        // Si hay productos no encontrados en el catálogo, mostrar advertencia
+        let mensajeAdvertencia = '';
+        if (productosNoEncontrados.length > 0) {
+          mensajeAdvertencia = '\n\n⚠️ Los siguientes productos no se encontraron exactamente en el catálogo:\n' +
+            productosNoEncontrados.map(p => `• ${p}`).join('\n') +
+            '\nSe guardaron con el nombre proporcionado.';
+        }
+
+        // Guardar temporalmente en el estado
+        estado.pedidoTemporal = {
+          nombre,
+          productos,
+          cantidades,
+          codigos,
+          fecha: moment().format('MM/DD/YYYY'),
+          usuario,
+          direccionManual
+        };
+
+        // Mostrar resumen y opciones
+        const resumen = productos.map((p, i) => `• ${p} (${cantidades[i]})`).join('\n');
+        const direccionFinal = direccionManual || buscarDireccion(nombre);
+        
+        await bot.sendMessage(chatId, 
+          `📄 *Resumen del pedido:*\n\n` +
+          `📦 *Cliente: ${nombre}*\n\n` +
+          `${resumen}\n\n` +
+          `📍 Dirección: ${direccionFinal}` +
+          mensajeAdvertencia +
+          `\n\n¿Deseas?\n` +
+          `0️⃣ Cancelar pedido\n` +
+          `1️⃣ Añadir otro producto\n` +
+          `2️⃣ Eliminar un producto\n` +
+          `3️⃣ Finalizar pedido\n` +
+          `4️⃣ Modificar dirección`,
+          { parse_mode: 'Markdown' }
+        );
+        
+        estado.paso = 'confirmarPedidoRapido';
+      } catch (error) {
+        console.error('Error en pedido rápido:', error);
+        bot.sendMessage(chatId, '❌ Ocurrió un error al procesar el pedido. Por favor, verifica el formato e intenta nuevamente.');
+      }
+      break;
+
+    case 'confirmarPedidoRapido':
+      if (texto === '0') {
+        delete estados[chatId];
+        bot.sendMessage(chatId, '❌ Pedido cancelado. Puedes iniciar uno nuevo cuando quieras.');
+      } else if (texto === '1') {
+        estado.paso = 'agregarProductoRapido';
+        bot.sendMessage(chatId, '📦 Escribe el nombre del nuevo producto:');
+      } else if (texto === '2') {
+        const lista = estado.pedidoTemporal.productos.map((p, i) => `${i + 1}. ${p} (${estado.pedidoTemporal.cantidades[i]})`).join('\n');
+        estado.paso = 'eliminarProductoRapido';
+        bot.sendMessage(chatId, `🗑 ¿Cuál producto deseas eliminar?\n${lista}`);
+      } else if (texto === '3') {
+        // Guardar el pedido final
+        await guardarEnSheets(estado.pedidoTemporal);
+        bot.sendMessage(chatId, '✅ Pedido guardado exitosamente. Puedes iniciar otro pedido enviando un nuevo mensaje.');
+        delete estados[chatId];
+      } else if (texto === '4') {
+        estado.paso = 'modificarDireccionRapida';
+        bot.sendMessage(chatId, '📍 Escribe la nueva dirección:');
+      }
+      break;
+
+    case 'agregarProductoRapido':
+      try {
+        const encontrados = productosData.map(p => {
+          const score = Math.max(
+            obtenerSimilitud(texto, p.memo),
+            obtenerSimilitud(texto, p.otra || ''),
+            obtenerSimilitud(texto, p.full || '')
+          );
+          return { ...p, score };
+        }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
+
+        if (encontrados.length > 0 && encontrados[0].score > 0.3) {
+          estado.productoTemporal = encontrados[0];
+          estado.paso = 'cantidadProductoRapido';
+          bot.sendMessage(chatId, `📦 Ingresa la cantidad para *${encontrados[0].memo}*:`, { parse_mode: 'Markdown' });
+        } else {
+          estado.productoTemporal = { memo: texto, codigo: '' };
+          estado.paso = 'cantidadProductoRapido';
+          bot.sendMessage(chatId, `⚠️ Producto no encontrado en el catálogo.\n📦 Ingresa la cantidad para *${texto}*:`, { parse_mode: 'Markdown' });
+        }
+      } catch (error) {
+        console.error('Error al agregar producto:', error);
+        bot.sendMessage(chatId, '❌ Error al procesar el producto. Intenta nuevamente.');
+      }
+      break;
+
+    case 'cantidadProductoRapido':
+      if (!/^\d+$/.test(texto)) {
+        return bot.sendMessage(chatId, '❌ Por favor ingresa una cantidad válida (solo números).');
+      }
+
+      estado.pedidoTemporal.productos.push(estado.productoTemporal.memo);
+      estado.pedidoTemporal.cantidades.push(texto);
+      estado.pedidoTemporal.codigos.push(estado.productoTemporal.codigo || '');
+
+      // Mostrar resumen actualizado
+      const resumenActualizado = estado.pedidoTemporal.productos.map((p, i) => 
+        `• ${p} (${estado.pedidoTemporal.cantidades[i]})`
+      ).join('\n');
+      
+      estado.paso = 'confirmarPedidoRapido';
+      bot.sendMessage(chatId,
+        `📄 *Pedido actualizado:*\n\n` +
+        `${resumenActualizado}\n\n` +
+        `¿Deseas?\n` +
+        `0️⃣ Cancelar pedido\n` +
+        `1️⃣ Añadir otro producto\n` +
+        `2️⃣ Eliminar un producto\n` +
+        `3️⃣ Finalizar pedido\n` +
+        `4️⃣ Modificar dirección`,
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case 'eliminarProductoRapido':
+      const indiceRapido = parseInt(texto) - 1;
+      const resultadoRapido = eliminarProducto(
+        indiceRapido,
+        estado.pedidoTemporal.productos,
+        estado.pedidoTemporal.cantidades,
+        estado.pedidoTemporal.codigos
+      );
+      
+      if (resultadoRapido.error) {
+        return bot.sendMessage(chatId, resultadoRapido.error);
+      }
+
+      // Mostrar resumen actualizado
+      const resumenDespuesEliminar = estado.pedidoTemporal.productos.map((p, i) => 
+        `• ${p} (${estado.pedidoTemporal.cantidades[i]})`
+      ).join('\n');
+
+      estado.paso = 'confirmarPedidoRapido';
+      bot.sendMessage(chatId,
+        `📄 *Pedido actualizado:*\n\n` +
+        `${resumenDespuesEliminar}\n\n` +
+        `¿Deseas?\n` +
+        `0️⃣ Cancelar pedido\n` +
+        `1️⃣ Añadir otro producto\n` +
+        `2️⃣ Eliminar un producto\n` +
+        `3️⃣ Finalizar pedido\n` +
+        `4️⃣ Modificar dirección`,
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case 'modificarDireccionRapida':
+      estado.pedidoTemporal.direccionManual = texto;
+      
+      // Mostrar resumen actualizado con la nueva dirección
+      const resumenConDireccion = estado.pedidoTemporal.productos.map((p, i) => 
+        `• ${p} (${estado.pedidoTemporal.cantidades[i]})`
+      ).join('\n');
+
+      estado.paso = 'confirmarPedidoRapido';
+      bot.sendMessage(chatId,
+        `📄 *Pedido actualizado:*\n\n` +
+        `${resumenConDireccion}\n\n` +
+        `📍 Nueva dirección: ${texto}\n\n` +
+        `¿Deseas?\n` +
+        `0️⃣ Cancelar pedido\n` +
+        `1️⃣ Añadir otro producto\n` +
+        `2️⃣ Eliminar un producto\n` +
+        `3️⃣ Finalizar pedido\n` +
+        `4️⃣ Modificar dirección`,
+        { parse_mode: 'Markdown' }
+      );
+      break;
+
+    case 'seleccionarPedido': {
+      const index = parseInt(texto) - 1;
+      if (isNaN(index) || !estado.pedidos[index]) {
+        return bot.sendMessage(chatId, '❌ Selección inválida');
+      }
+      
+      const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+      await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
+      await doc.loadInfo();
+      const sheetPedidos = doc.sheetsByIndex[0];
+      const rows = await sheetPedidos.getRows();
+      
+      if (index >= rows.length) {
+        return bot.sendMessage(chatId, '❌ El pedido ya no existe');
+      }
+      
+      const pedido = estado.pedidos[index];
+      const row = rows[pedido.rowIndex]; // Usar rowIndex del pedido
+      
+      // Construir resumen del pedido
+      const resumen = `
+    📄 *Pedido seleccionado:*
+    
+    *Cliente:* ${pedido.nombre}
+    *Fecha:* ${row['Fecha de Despacho']}
+    *Productos:*
+    ${row['Productos'].split('\n').map((p, i) => `• ${p} (${row['Cantidad'].split('\n')[i]})`).join('\n')}
+    
+    📍 *Dirección:* ${buscarDireccion(pedido.nombre)}
+      `;
+      
+      estado.pedidoSeleccionado = {
+        ...pedido,
+        productos: row['Productos'].split('\n'),
+        cantidades: row['Cantidad'].split('\n'),
+        rowIndex: pedido.rowIndex
+      };
+      
+      await bot.sendMessage(chatId, resumen, { parse_mode: 'Markdown' });
+      estado.paso = 'opcionesModificacion';
+      bot.sendMessage(chatId,
+        '¿Qué deseas modificar?\n' +
+        '1️⃣ Modificar productos\n' +
+        '2️⃣ Modificar fecha\n' +
+        '3️⃣ Modificar dirección\n' +
+        '4️⃣ Eliminar pedido'
+      );
+      break;
+    }
+
+    case 'opcionesModificacion':
+      if (texto === '1') {
+        estado.paso = 'modificarProductos';
+        bot.sendMessage(chatId, 
+          '¿Qué operación deseas realizar?\n' +
+          '1️⃣ Agregar producto\n' +
+          '2️⃣ Modificar cantidad\n' +
+          '3️⃣ Eliminar producto'
+        );
+      } else if (texto === '2') {
+        estado.paso = 'modificarFecha';
+        bot.sendMessage(chatId, '🗓 Ingresa la nueva fecha de despacho (MM/DD):');
+      } else if (texto === '3') {
+        estado.paso = 'modificarDireccion';
+        bot.sendMessage(chatId, '📍 Ingresa la nueva dirección:');
+      } else if (texto === '4') {
+        await eliminarPedido(estado.pedidoSeleccionado.rowIndex);
+        delete estados[chatId];
+        bot.sendMessage(chatId, '✅ Pedido eliminado correctamente');
+      }
+      break;
+
+    case 'modificarProductos': {
+      if (texto === '1') {
+        estado.paso = 'agregarProducto';
+        bot.sendMessage(chatId, '📦 Escribe el nombre del nuevo producto:');
+      } else if (texto === '2') {
+        const lista = estado.pedidoSeleccionado.productos.map((p, i) => `${i + 1}. ${p} (${estado.pedidoSeleccionado.cantidades[i]})`).join('\n');
+        estado.paso = 'seleccionarProductoModificar';
+        bot.sendMessage(chatId, `Selecciona el producto a modificar:\n${lista}`);
+      } else if (texto === '3') {
+        const lista = estado.pedidoSeleccionado.productos.map((p, i) => `${i + 1}. ${p}`).join('\n');
+        estado.paso = 'seleccionarProductoEliminar';
+        bot.sendMessage(chatId, `Selecciona el producto a eliminar:\n${lista}`);
+      }
+      break;
+    }
+
+    case 'agregarProducto': {
+      // Lógica para agregar producto
+      const encontrados = productosData.map(p => {
+        const score = Math.max(
+          obtenerSimilitud(texto, p.memo),
+          obtenerSimilitud(texto, p.otra || ''),
+          obtenerSimilitud(texto, p.full || '')
+        );
+        return { ...p, score };
+      }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
+
+      // Aplicar filtrado inteligente
+      const resultadosFiltrados = filtrarResultados(encontrados, texto);
+
+      if (resultadosFiltrados.length > 0) {
+        estado.opciones = resultadosFiltrados;
+        estado.paso = 'esperandoSeleccion';
+        const opciones = resultadosFiltrados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
+        
+        await enviarMensajeLargo(chatId, 
+          `🔍 Resultados más relevantes:\n\n${opciones}\n\n` +
+          `🔍 Selecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        estado.paso = 'productoSinCoincidencia';
+        estado.entradaManual = texto;
+        bot.sendMessage(chatId, '❌ No se encontró ninguna coincidencia.\n¿Qué deseas hacer?\n1️⃣ Buscar otra vez\n2️⃣ Escribir producto manual');
+      }
+      
+      break;
+    }
+
+    case 'esperandoSeleccion':
+      const indice = parseInt(texto);
+      if (!isNaN(indice) && estado.opciones[indice - 1]) {
+        const seleccionado = estado.opciones[indice - 1];
+        estado.productos.push(seleccionado.memo);
+        estado.codigos.push(seleccionado.codigo);
+        estado.paso = 'cantidad';
+        bot.sendMessage(chatId, `📦 Escribe la cantidad para *${seleccionado.memo}*:`, { parse_mode: 'Markdown' });
+      }
+      break;
+
+    case 'productoSinCoincidencia':
+      if (texto === '1') {
+        estado.paso = 'producto';
+        bot.sendMessage(chatId, '📦 Escribe el nombre del producto otra vez:');
+      } else if (texto === '2') {
+        estado.productos.push(estado.entradaManual);
+        estado.codigos.push('');
+        estado.paso = 'cantidad';
+        bot.sendMessage(chatId, `📦 Escribe la cantidad para *${estado.entradaManual}*:`, { parse_mode: 'Markdown' });
+      } else {
+        bot.sendMessage(chatId, '❌ Opción inválida. Usa 1 o 2.');
+      }
+      break;
+
+    case 'cantidad':
+      if (!/^[0-9]+$/.test(texto)) {
+        return bot.sendMessage(chatId, '❌ Por favor ingresa una cantidad válida.');
+      }
+      estado.cantidades.push(texto);
+      estado.paso = 'agregarOtro';
+      bot.sendMessage(chatId, '¿Qué deseas hacer ahora?\n1️⃣ Añadir otro producto\n2️⃣ Finalizar productos\n3️⃣ Eliminar producto');
+      break;
+
+    case 'agregarOtro':
+      if (texto === '1') {
+        estado.paso = 'producto';
+        bot.sendMessage(chatId, '📦 Escribe el nombre del próximo producto:');
+      } else if (texto === '2') {
+        if (estado.productos.length === 0) {
+          estado.paso = 'producto';
+          bot.sendMessage(chatId, '⚠️ No hay productos en el pedido. Añade al menos uno.');
+        } else {
+          estado.paso = 'fecha';
+          bot.sendMessage(chatId, '🗓 ¿Cuál es la fecha de despacho? (MM/DD)');
+        }
+      } else if (texto === '3') {
+        const resumen = estado.productos.map((p, i) => `${i + 1}. ${p} (${estado.cantidades[i]})`).join('\n');
+        estado.paso = 'eliminarResumen';
+        bot.sendMessage(chatId, `🗑 ¿Cuál producto deseas eliminar?\n${resumen}`);
+      } else {
+        bot.sendMessage(chatId, '❌ Opción inválida. Usa 1, 2 o 3.');
+      }
+      break;
+
+    case 'eliminarResumen':
+      indiceAEliminar = parseInt(texto) - 1;
+      resultadoEliminar = eliminarProducto(indiceAEliminar, estado.productos, estado.cantidades, estado.codigos);
+      if (resultadoEliminar.error) {
+        return bot.sendMessage(chatId, resultadoEliminar.error);
+      }
+      bot.sendMessage(chatId, `🗑 Producto eliminado: ${resultadoEliminar.eliminado}`);
+      estado.paso = 'agregarOtro';
+      bot.sendMessage(chatId, '¿Deseas añadir otro producto?\n1️⃣ Sí\n2️⃣ Terminar pedido');
+      break;
+
+    case 'fecha':
+      resultadoFecha = procesarFecha(texto);
+      if (resultadoFecha.error) {
+        return bot.sendMessage(chatId, resultadoFecha.error);
+      }
+      estado.fecha = resultadoFecha.fecha;
+      estado.paso = 'notaPregunta';
+      bot.sendMessage(chatId, '🗒 ¿Quieres hacer una nota?\n1️⃣ Sí\n2️⃣ No');
+      break;
+
+    case 'notaPregunta':
+      if (texto === '1') {
+        estado.paso = 'nota';
+        bot.sendMessage(chatId, '✍️ Escribe tu nota:');
+      } else if (texto === '2') {
+        estado.nota = '';
+        estado.paso = 'resumen';
+        mostrarResumen(chatId);
+      } else {
+        bot.sendMessage(chatId, '❌ Opción inválida. Usa 1 o 2.');
+      }
+      break;
+
+    case 'nota':
+      estado.nota = texto;
+      estado.paso = 'resumen';
+      mostrarResumen(chatId);
+      break;
+
+    case 'resumen':
+      if (texto === '1') {
+        estado.paso = 'producto';
+        bot.sendMessage(chatId, '📦 Escribe el nombre del nuevo producto:');
+      } else if (texto === '2') {
+        const resumen = estado.productos.map((p, i) => `${i + 1}. ${p} (${estado.cantidades[i]})`).join('\n');
+        estado.paso = 'eliminarResumen';
+        bot.sendMessage(chatId, `🗑 ¿Cuál producto deseas eliminar?\n${resumen}`);
+      } else if (texto === '3') {
+        const usuario = msg.from.username || msg.from.first_name || 'Desconocido';
+        estado.usuario = usuario;
+        await guardarEnSheets(estado);
+        delete estados[chatId];
+        bot.sendMessage(chatId, '✅ Pedido guardado con éxito. Puedes iniciar otro pedido enviando un nuevo mensaje.');
+      } else if (texto === '0') {
+        delete estados[chatId];
+        bot.sendMessage(chatId, '❌ Pedido cancelado. Puedes iniciar uno nuevo cuando quieras.');
+      } else if (texto.toLowerCase() === 'direccion' || texto === '4') {
+        estado.paso = 'direccionManual';
+        bot.sendMessage(chatId, '📍 Escribe la dirección manual para este pedido:');
+      } else {
+        bot.sendMessage(chatId, '❌ Número inválido.');
+      }
+      break;
+
+    case 'direccionManual':
+      estado.direccionManual = texto;
+      estado.paso = 'resumen';
+      mostrarResumen(chatId);
+      break;
+
+    case 'seleccionarProductoModificar': {
+      const index = parseInt(texto) - 1;
+      if (isNaN(index) || !estado.pedidoSeleccionado.productos[index]) {
+        return bot.sendMessage(chatId, '❌ Selección inválida');
+      }
+      estado.productoIndex = index;
+      estado.paso = 'nuevaCantidad';
+      bot.sendMessage(chatId, 'Ingresa la nueva cantidad:');
+      break;
+    }
+
+    case 'nuevaCantidad': {
+      if (!/^\d+$/.test(texto)) {
+        return bot.sendMessage(chatId, '❌ Cantidad inválida');
+      }
+    
+      // Asegurar que rowIndex existe
+      if (typeof estado.pedidoSeleccionado.rowIndex === 'undefined') {
+        throw new Error('rowIndex no definido en pedidoSeleccionado');
+      }
+    
+      // Actualizar datos locales
+      estado.pedidoSeleccionado.cantidades[estado.productoIndex] = texto;
+    
+      // Usar la función helper
+      const pedidoActualizado = crearObjetoPedido(estado.pedidoSeleccionado);
+    
+      // Verificar datos antes de enviar
+      console.log('Datos enviados a actualizar:', pedidoActualizado);
+    
+      await actualizarProductosEnPedido(pedidoActualizado);
+      
+      // Restablecer estado para futuras modificaciones
+      estado.pedidoSeleccionado.rowIndex = -1;
+      
+      bot.sendMessage(chatId, '✅ Cambios guardados exitosamente\n1️⃣ Seguir editando\n2️⃣ Terminar');
+      estado.paso = 'continuarEdicion';
+      break;
+    }
+
+    case 'seleccionarProductoEliminar': {
+      const index = parseInt(texto) - 1;
+      if (isNaN(index) || !estado.pedidoSeleccionado.productos[index]) {
+        return bot.sendMessage(chatId, '❌ Selección inválida');
+      }
+      
+      const nuevosProductos = estado.pedidoSeleccionado.productos.filter((_, i) => i !== index);
+      const nuevasCantidades = estado.pedidoSeleccionado.cantidades.filter((_, i) => i !== index);
+      
+      estado.pedidoSeleccionado.productos = nuevosProductos;
+      estado.pedidoSeleccionado.cantidades = nuevasCantidades;
+      
+      await actualizarProductosEnPedido(crearObjetoPedido(estado.pedidoSeleccionado));
+      
+      estado.paso = 'continuarEdicion';
+      bot.sendMessage(chatId, '✅ Producto eliminado\n1️⃣ Seguir editando\n2️⃣ Terminar');
+      break;
+    }
+
+    case 'modificarFecha': {
+      const [mes, dia] = texto.split('/');
+      if (!mes || !dia || isNaN(mes) || isNaN(dia)) {
+        return bot.sendMessage(chatId, '❌ Formato inválido. Usa MM/DD');
+      }
+
+      try {
+        const nuevaFecha = `${mes.padStart(2, '0')}/${dia.padStart(2, '0')}/${new Date().getFullYear()}`;
+        
+        // Actualizar el pedido con la nueva fecha
+        await actualizarProductosEnPedido(crearObjetoPedido(estado.pedidoSeleccionado, { fecha: nuevaFecha }));
+        
+        // Actualizar el estado después de guardar exitosamente
+        estado.pedidoSeleccionado.fecha = nuevaFecha;
+        estado.paso = 'continuarEdicion';
+        bot.sendMessage(chatId, `✅ Fecha actualizada\n1️⃣ Seguir editando\n2️⃣ Terminar`);
+      } catch (error) {
+        console.error('Error al actualizar fecha:', error);
+        bot.sendMessage(chatId, '❌ Error al actualizar la fecha');
+      }
+      break;
+    }
+
+    case 'modificarDireccion': {
+      try {
+        const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+        await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
+        await doc.loadInfo();
+        
+        // Primero eliminamos el pedido anterior en ambas hojas
+        const sheetPedidos = doc.sheetsByIndex[0];
+        const hojaCircuit = doc.sheetsByTitle['Circuit'];
+        
+        const rowsPedidos = await sheetPedidos.getRows();
+        const rowsCircuit = await hojaCircuit.getRows();
+        
+        // Eliminar de la hoja principal
+        if (estado.pedidoSeleccionado.rowIndex >= 0 && estado.pedidoSeleccionado.rowIndex < rowsPedidos.length) {
+          await rowsPedidos[estado.pedidoSeleccionado.rowIndex].delete();
+        }
+        
+        // Eliminar de Circuit
+        const circuitIndex = rowsCircuit.findIndex(r => 
+          r['Address/Company Name'] === estado.pedidoSeleccionado.nombre
+        );
+        if (circuitIndex >= 0) {
+          await rowsCircuit[circuitIndex].delete();
+        }
+        
+        // Crear nuevas filas con la información actualizada
+        await sheetPedidos.addRow({
+          'Nombre del Cliente': estado.pedidoSeleccionado.nombre,
+          'Productos': estado.pedidoSeleccionado.productos.join('\n'),
+          'Cantidad': estado.pedidoSeleccionado.cantidades.join('\n'),
+          'Fecha de Despacho': estado.pedidoSeleccionado.fecha,
+          'Notas': estado.pedidoSeleccionado.nota || '',
+          'Usuario': estado.pedidoSeleccionado.usuario,
+          'codigo': (estado.pedidoSeleccionado.codigos || []).join('\n')
+        });
+        
+        await hojaCircuit.addRow({
+          'Address/Company Name': estado.pedidoSeleccionado.nombre,
+          'Address line 1': texto,
+          'Internal notes': estado.pedidoSeleccionado.productos.map((p, i) => 
+            `${p} (${estado.pedidoSeleccionado.cantidades[i]})`
+          ).join(', '),
+          'seller': estado.pedidoSeleccionado.usuario,
+          'Driver (email or phone number)': ''
+        });
+        
+        estado.paso = 'continuarEdicion';
+        bot.sendMessage(chatId, '✅ Dirección actualizada\n1️⃣ Seguir editando\n2️⃣ Terminar');
+      } catch (error) {
+        console.error('Error al actualizar dirección:', error);
+        bot.sendMessage(chatId, '❌ Error al actualizar la dirección');
+      }
+      break;
+    }
+
+    case 'continuarEdicion':
+      if (texto === '1') {
+        const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+        await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
+        await doc.loadInfo();
+        const sheetPedidos = doc.sheetsByIndex[0];
+        
+        // Recargar filas actualizadas
+        const rows = await sheetPedidos.getRows();
+        
+        // Buscar el pedido actualizado por nombre y fecha
+        const pedidoActualizado = rows.find(row => 
+          row['Nombre del Cliente'] === estado.pedidoSeleccionado.nombre &&
+          row['Fecha de Despacho'] === estado.pedidoSeleccionado.fecha
+        );
+        
+        if (!pedidoActualizado) {
+          return bot.sendMessage(chatId, '❌ No se pudo encontrar el pedido actualizado');
+        }
+        
+        // Actualizar el índice con la posición real
+        estado.pedidoSeleccionado.rowIndex = rows.indexOf(pedidoActualizado);
+        
+        // Actualizar datos locales
+        estado.pedidoSeleccionado.productos = pedidoActualizado['Productos'].split('\n');
+        estado.pedidoSeleccionado.cantidades = pedidoActualizado['Cantidad'].split('\n');
+        
+        // Mostrar menú de modificación
+        estado.paso = 'opcionesModificacion';
+        bot.sendMessage(chatId,
+          '¿Qué deseas modificar?\n' +
+          '1️⃣ Modificar productos\n' +
+          '2️⃣ Modificar fecha\n' +
+          '3️⃣ Modificar dirección\n' +
+          '4️⃣ Eliminar pedido'
+        );
+      } else if (texto === '2') {
+        delete estados[chatId];
+        bot.sendMessage(chatId, '✅ Modificaciones finalizadas');
+      }
+      break;
+
+    case 'nombre':
+      estado.nombre = texto;
+      estado.paso = 'producto';
+      bot.sendMessage(chatId, '📦 Escribe el nombre del producto:');
+      break;
+
+    case 'producto':
+      const encontrados = productosData.map(p => {
+        const score = Math.max(
+          obtenerSimilitud(texto, p.memo),
+          obtenerSimilitud(texto, p.otra || ''),
+          obtenerSimilitud(texto, p.full || '')
+        );
+        return { ...p, score };
+      }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
+
+      // Aplicar filtrado inteligente
+      const resultadosFiltrados = filtrarResultados(encontrados, texto);
+
+      if (resultadosFiltrados.length > 0) {
+        estado.opciones = resultadosFiltrados;
+        estado.paso = 'esperandoSeleccion';
+        const opciones = resultadosFiltrados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
+        
+        await enviarMensajeLargo(chatId, 
+          `🔍 Resultados más relevantes:\n\n${opciones}\n\n` +
+          `🔍 Selecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        estado.paso = 'productoSinCoincidencia';
+        estado.entradaManual = texto;
+        bot.sendMessage(chatId, '❌ No se encontró ninguna coincidencia.\n¿Qué deseas hacer?\n1️⃣ Buscar otra vez\n2️⃣ Escribir producto manual');
+      }
+      break;
+
+    case 'productoSinCoincidencia':
+      if (texto === '1') {
+        estado.paso = 'producto';
+        bot.sendMessage(chatId, '📦 Escribe el nombre del producto otra vez:');
+      } else if (texto === '2') {
+        estado.productos.push(estado.entradaManual);
+        estado.codigos.push('');
+        estado.paso = 'cantidad';
+        bot.sendMessage(chatId, `📦 Escribe la cantidad para *${estado.entradaManual}*:`, { parse_mode: 'Markdown' });
+      } else {
+        bot.sendMessage(chatId, '❌ Opción inválida. Usa 1 o 2.');
+      }
+      break;
+
+    case 'cantidad':
+      if (!/^[0-9]+$/.test(texto)) {
+        return bot.sendMessage(chatId, '❌ Por favor ingresa una cantidad válida.');
+      }
+      estado.cantidades.push(texto);
+      estado.paso = 'agregarOtro';
+      bot.sendMessage(chatId, '¿Qué deseas hacer ahora?\n1️⃣ Añadir otro producto\n2️⃣ Finalizar productos\n3️⃣ Eliminar producto');
+      break;
+
+    case 'agregarOtro':
+      if (texto === '1') {
+        estado.paso = 'producto';
+        bot.sendMessage(chatId, '📦 Escribe el nombre del próximo producto:');
+      } else if (texto === '2') {
+        if (estado.productos.length === 0) {
+          estado.paso = 'producto';
+          bot.sendMessage(chatId, '⚠️ No hay productos en el pedido. Añade al menos uno.');
+        } else {
+          estado.paso = 'fecha';
+          bot.sendMessage(chatId, '🗓 ¿Cuál es la fecha de despacho? (MM/DD)');
+        }
+      } else if (texto === '3') {
+        const resumen = estado.productos.map((p, i) => `${i + 1}. ${p} (${estado.cantidades[i]})`).join('\n');
+        estado.paso = 'eliminarResumen';
+        bot.sendMessage(chatId, `🗑 ¿Cuál producto deseas eliminar?\n${resumen}`);
+      } else {
+        bot.sendMessage(chatId, '❌ Opción inválida. Usa 1, 2 o 3.');
+      }
+      break;
+
+    case 'cantidadModificar': {
+      if (!/^\d+$/.test(texto)) {
+        return bot.sendMessage(chatId, '❌ Cantidad inválida');
+      }
+      
+      // Actualizar arrays
+      const nuevosProductos = [...estado.pedidoSeleccionado.productos, estado.productoTemporal.nombre];
+      const nuevasCantidades = [...estado.pedidoSeleccionado.cantidades, texto];
+      
+      await actualizarProductosEnPedido({
+        rowIndex: estado.pedidoSeleccionado.rowIndex,
+        nombre: estado.pedidoSeleccionado.nombre,
+        productos: nuevosProductos,
+        cantidades: nuevasCantidades,
+        fecha: estado.pedidoSeleccionado.fecha,
+        nota: estado.pedidoSeleccionado.nota || '',
+        usuario: estado.pedidoSeleccionado.usuario,
+        codigos: estado.pedidoSeleccionado.codigos || []
+      });
+      
+      // Actualizar estado local
+      estado.pedidoSeleccionado.productos = nuevosProductos;
+      estado.pedidoSeleccionado.cantidades = nuevasCantidades;
+      
+      estado.paso = 'continuarEdicion';
+      bot.sendMessage(chatId, '✅ Producto agregado\n1️⃣ Seguir editando\n2️⃣ Terminar');
+      break;
+    }
+  }
+});
+
+function mostrarResumen(chatId) {
+  const estado = estados[chatId];
+  const resumen = estado.productos.map((p, i) => `• ${p} (${estado.cantidades[i]})`).join('\n');
+  const direccion = estado.direccionManual || buscarDireccion(estado.nombre);
+  enviarMensajeLargo(chatId, `📄 *Pedido para: ${estado.nombre}*\n\n${resumen}\n\n📍 Dirección: ${direccion}\n\n¿Deseas?\n0️⃣ Cancelar pedido\n1️⃣ Añadir otro producto\n2️⃣ Eliminar un producto\n3️⃣ Finalizar pedido\n4️⃣ Modificar dirección`, { parse_mode: 'Markdown' });
+}
+
+async function actualizarProductosEnPedido(data) {
+  try {
+    // Validación mejorada
+    if (!data || typeof data.rowIndex === 'undefined' || !data.nombre || !data.productos || !data.cantidades) {
+      console.error('Datos recibidos:', data);
+      throw new Error('Faltan datos obligatorios para la actualización');
+    }
+
+    const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
+    await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
+    await doc.loadInfo();
+    
+    // Obtener ambas hojas
+    const sheetPedidos = doc.sheetsByIndex[0];
+    const hojaCircuit = doc.sheetsByTitle['Circuit'];
+    
+    const rowsPedidos = await sheetPedidos.getRows();
+    const rowsCircuit = await hojaCircuit.getRows();
+
+    // 1. Eliminar filas originales
+    if (data.rowIndex >= 0 && data.rowIndex < rowsPedidos.length) {
+      await rowsPedidos[data.rowIndex].delete();
+    }
+    
+    // Buscar y eliminar en Circuit
+    const circuitIndex = rowsCircuit.findIndex(r => 
+      r['Address/Company Name'] === data.nombre
+    );
+    if (circuitIndex >= 0) {
+      await rowsCircuit[circuitIndex].delete();
+    }
+
+    // 2. Crear nuevas filas con los datos actualizados
+    await sheetPedidos.addRow({
+      'Nombre del Cliente': data.nombre,
+      'Productos': data.productos.join('\n'),
+      'Cantidad': data.cantidades.join('\n'),
+      'Fecha de Despacho': data.fecha || moment().format('MM/DD/YYYY'),
+      'Notas': data.nota || '',
+      'Usuario': data.usuario || 'Desconocido',
+      'codigo': (data.codigos || Array(data.productos.length).fill('')).join('\n')
+    });
+
+    // 3. Actualizar Circuit con nueva fila
+    await hojaCircuit.addRow({
+      'Address/Company Name': data.nombre,
+      'Address line 1': buscarDireccion(data.nombre),
+      'Internal notes': data.productos.map((p, i) => `${p} (${data.cantidades[i]})`).join(', '),
+      'seller': data.usuario || 'Desconocido',
+      'Driver (email or phone number)': ''
+    });
+
+    return true;
+  } catch (error) {
+    console.error('Error al actualizar productos:', error);
+    throw error;
+  }
+}
+
+cargarDatos();
