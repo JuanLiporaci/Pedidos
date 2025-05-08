@@ -163,7 +163,7 @@ async function guardarEnSheets(data) {
   const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
   await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
   await doc.loadInfo();
-  const sheetPedidos = doc.sheetsByIndex[0];
+  const sheetPedidos = doc.sheetsByTitle['Pedidos'];
   await sheetPedidos.addRow({
     'Nombre del Cliente': data.nombre,
     'Productos': data.productos.join('\n'),
@@ -189,7 +189,7 @@ async function obtenerPedidosUsuario(usuario) {
   const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
   await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
   await doc.loadInfo();
-  const sheetPedidos = doc.sheetsByIndex[0];
+  const sheetPedidos = doc.sheetsByTitle['Pedidos'];
   
   const rows = await sheetPedidos.getRows();
   
@@ -208,7 +208,7 @@ async function eliminarPedido(rowIndex) {
   const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
   await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
   await doc.loadInfo();
-  const sheetPedidos = doc.sheetsByIndex[0];
+  const sheetPedidos = doc.sheetsByTitle['Pedidos'];
   const rows = await sheetPedidos.getRows();
   if (rowIndex >= 0 && rowIndex < rows.length) {
     await rows[rowIndex].delete();
@@ -627,7 +627,7 @@ bot.on('message', async (msg) => {
       const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
       await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
       await doc.loadInfo();
-      const sheetPedidos = doc.sheetsByIndex[0];
+      const sheetPedidos = doc.sheetsByTitle['Pedidos'];
       const rows = await sheetPedidos.getRows();
       
       if (index >= rows.length) {
@@ -954,7 +954,7 @@ bot.on('message', async (msg) => {
         await doc.loadInfo();
         
         // Primero eliminamos el pedido anterior en ambas hojas
-        const sheetPedidos = doc.sheetsByIndex[0];
+        const sheetPedidos = doc.sheetsByTitle['Pedidos'];
         const hojaCircuit = doc.sheetsByTitle['Circuit'];
         
         const rowsPedidos = await sheetPedidos.getRows();
@@ -1008,7 +1008,7 @@ bot.on('message', async (msg) => {
         const doc = new GoogleSpreadsheet(SPREADSHEET_ID);
         await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
         await doc.loadInfo();
-        const sheetPedidos = doc.sheetsByIndex[0];
+        const sheetPedidos = doc.sheetsByTitle['Pedidos'];
         
         // Recargar filas actualizadas
         const rows = await sheetPedidos.getRows();
@@ -1176,7 +1176,7 @@ async function actualizarProductosEnPedido(data) {
     await doc.loadInfo();
     
     // Obtener ambas hojas
-    const sheetPedidos = doc.sheetsByIndex[0];
+    const sheetPedidos = doc.sheetsByTitle['Pedidos'];
     const hojaCircuit = doc.sheetsByTitle['Circuit'];
     
     const rowsPedidos = await sheetPedidos.getRows();

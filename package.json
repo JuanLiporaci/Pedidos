@@ -11,6 +11,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "bot-de-telegram": "file:",
     "google-spreadsheet": "^3.3.0",
     "moment": "^2.29.4",
     "node-telegram-bot-api": "^0.61.0"
