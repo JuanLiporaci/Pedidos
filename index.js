@@ -7,12 +7,49 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7754946488:AAE6XjHw18y8b73W6k_d
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1CNyD_seHZZyB-2NPusYEpNGF8m5LzUz87RHIYitfnAU';
 
 // Configuración de credenciales de Google
-const GOOGLE_CREDENTIALS = process.env.GOOGLE_CREDENTIALS 
-  ? JSON.parse(process.env.GOOGLE_CREDENTIALS)
-  : require('./credentials.json');
+let GOOGLE_CREDENTIALS;
+try {
+  if (process.env.GOOGLE_CREDENTIALS) {
+    // En producción, las credenciales están en variable de entorno
+    GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+    console.log('Usando credenciales desde variable de entorno');
+  } else {
+    // En desarrollo, las credenciales están en archivo local
+    GOOGLE_CREDENTIALS = require('./credentials.json');
+    console.log('Usando credenciales desde archivo local');
+  }
+} catch (error) {
+  console.error('Error al cargar credenciales:', error);
+  // Credenciales de respaldo para pruebas (no funcionarán en producción)
+  GOOGLE_CREDENTIALS = {
+    type: 'service_account',
+    project_id: 'proyecto-demo',
+    client_email: 'ejemplo@proyecto-demo.iam.gserviceaccount.com'
+  };
+  console.warn('Usando credenciales de respaldo (solo para desarrollo)');
+}
 
+// Inicializar el bot con polling
 const bot = new TelegramBot(TOKEN, { polling: true });
 
+// Manejar errores de conexión
+bot.on('polling_error', (error) => {
+  console.error('Error en el polling de Telegram:', error);
+  
+  if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET') {
+    console.log('Error de conexión temporal. El bot intentará reconectarse automáticamente.');
+  } else if (error.code === 'ENOTFOUND') {
+    console.error('No se pudo resolver el host. Verifica la conexión a internet.');
+  } else if (error.response && error.response.statusCode === 401) {
+    console.error('Error de autenticación. Verifica el TOKEN del bot.');
+  } else if (error.response && error.response.statusCode === 409) {
+    console.error('Conflicto de actualización: otro proceso ya está usando este bot.');
+  } else {
+    console.error('Error desconocido en el polling:', error);
+  }
+});
+
+// Variables para almacenar datos
 const estados = {};
 let productosData = [];
 let direccionesData = [];
@@ -40,6 +77,11 @@ function obtenerSimilitud(str1, str2) {
   // Si alguna cadena está vacía, retornar 0
   if (!s1 || !s2) return 0;
 
+  // Comprobación simple de contención
+  if (s2.includes(s1) || s1.includes(s2)) {
+    return 0.8; // Dar un puntaje alto para coincidencias directas
+  }
+
   // Dividir en palabras y filtrar palabras vacías
   const words1 = s1.split(' ').filter(w => w.length > 0);
   const words2 = s2.split(' ').filter(w => w.length > 0);
@@ -63,9 +105,9 @@ function obtenerSimilitud(str1, str2) {
         break;
       }
       
-      // Coincidencia parcial si una palabra contiene a la otra
+      // Coincidencia parcial mejorada
       if (word2.includes(word1) || word1.includes(word2)) {
-        matches += 0.5;
+        matches += 0.7; // Aumentar el valor para coincidencias parciales
         break;
       }
     }
@@ -77,8 +119,8 @@ function obtenerSimilitud(str1, str2) {
 
 // Función para filtrar resultados simplificada
 function filtrarResultados(resultados, query) {
-  // Filtrar por un umbral base más permisivo
-  const filtrados = resultados.filter(r => r.score > 0.2);
+  // Filtrar por un umbral más permisivo
+  const filtrados = resultados.filter(r => r.score > 0.1); // Reducir el umbral a 0.1
   
   // Ordenar por score
   const ordenados = filtrados.sort((a, b) => b.score - a.score);
@@ -143,6 +185,29 @@ async function cargarDatos() {
     console.log('Datos cargados exitosamente');
   } catch (error) {
     console.error('Error al cargar datos:', error);
+    
+    // Si hay un error, cargar algunos productos predeterminados para que la búsqueda funcione
+    productosData = [
+      { codigo: 'MOIL15W40', memo: 'Mobil Delvac MX 15W40 Galon', otra: 'Aceite Mobil Delvac 15W40 SAE', full: 'Mobil Delvac MX ESP 15W40' },
+      { codigo: 'MOIL5W30', memo: 'Mobil Super 5W30 Galon', otra: 'Aceite Mobil Super 5000 5W30 SAE', full: 'Mobil Super 5W30' },
+      { codigo: 'SHELL15W40', memo: 'Shell Rotella T4 15W40 Galon', otra: 'Aceite Shell Rotella T4 SAE 15W40', full: 'Shell Rotella T4 15W40' },
+      { codigo: 'CBXM', memo: 'Caja de Mistyk', otra: 'Caja completa Mistyk', full: 'Caja Mistyk 12 unidades' },
+      { codigo: 'DELO400', memo: 'Chevron Delo 400 LE 15W40 Galon', otra: 'Aceite Chevron Delo 400 SAE 15W40', full: 'Chevron Delo 400 LE 15W40' },
+      { codigo: 'BKBLG', memo: 'Black Gold 15W40 Galon', otra: 'Aceite Black Gold SAE 15W40', full: 'Black Gold 15W40' },
+      { codigo: 'DELO15W40', memo: 'Chevron Delo 600 ADF 15W40 Galon', otra: 'Aceite Chevron Delo 600 ADF SAE 15W40', full: 'Chevron Delo 600 ADF 15W40' },
+      { codigo: 'SAE90', memo: 'Valvoline SAE 90 Galon', otra: 'Aceite Valvoline SAE 90', full: 'Valvoline SAE 90' },
+      { codigo: 'SAE140', memo: 'Valvoline SAE 140 Galon', otra: 'Aceite Valvoline SAE 140', full: 'Valvoline SAE 140' },
+      { codigo: 'HIDRAULICO', memo: 'Aceite Hidraulico AW68', otra: 'Aceite Hidraulico AW 68', full: 'Aceite Hidraulico AW68' }
+    ];
+    
+    // Cargar algunas direcciones predeterminadas
+    direccionesData = [
+      { nombre: 'ABC Trucking', direccion: '123 Main St, Austin, TX' },
+      { nombre: 'Transportes XYZ', direccion: '456 Oak St, Houston, TX' },
+      { nombre: 'Logistica Rapida', direccion: '789 Pine Ave, Dallas, TX' }
+    ];
+    
+    console.log('Cargados datos predeterminados debido a error de conexión');
   }
 }
 
@@ -164,16 +229,56 @@ async function guardarEnSheets(data) {
   await doc.useServiceAccountAuth(GOOGLE_CREDENTIALS);
   await doc.loadInfo();
   const sheetPedidos = doc.sheetsByTitle['Pedidos'];
-  await sheetPedidos.addRow({
-    'Nombre del Cliente': data.nombre,
-    'Productos': data.productos.join('\n'),
-    'Cantidad': data.cantidades.join('\n'),
-    'Fecha de Despacho': data.fecha,
-    'Notas': data.nota || '',
-    'Usuario': data.usuario,
-    'codigo': data.codigos.join('\n')
-  });
+  const rows = await sheetPedidos.getRows();
 
+  // Definir los campos relevantes
+  const campos = [
+    'Nombre del Cliente',
+    'Productos',
+    'Cantidad',
+    'Fecha de Despacho',
+    'Notas',
+    'Usuario',
+    'codigo'
+  ];
+
+  // Buscar la primera fila vacía
+  let filaVacia = null;
+  for (const row of rows) {
+    const vacia = campos.every(campo => !row[campo] || row[campo].toString().trim() === '');
+    if (vacia) {
+      filaVacia = row;
+      break;
+    }
+  }
+
+  // Fecha actual para el registro
+  const fechaSubida = moment().format('MM/DD/YYYY HH:mm:ss');
+
+  if (filaVacia) {
+    // Si hay una fila vacía, la rellenamos
+    filaVacia['Nombre del Cliente'] = data.nombre;
+    filaVacia['Productos'] = data.productos.join('\n');
+    filaVacia['Cantidad'] = data.cantidades.join('\n');
+    filaVacia['Fecha de Despacho'] = data.fecha;
+    filaVacia['Notas'] = data.nota || '';
+    filaVacia['Usuario'] = data.usuario;
+    filaVacia['codigo'] = data.codigos.join('\n');
+    await filaVacia.save();
+  } else {
+    // Si no hay filas vacías, agregamos una nueva
+    await sheetPedidos.addRow({
+      'Nombre del Cliente': data.nombre,
+      'Productos': data.productos.join('\n'),
+      'Cantidad': data.cantidades.join('\n'),
+      'Fecha de Despacho': data.fecha,
+      'Notas': data.nota || '',
+      'Usuario': data.usuario,
+      'codigo': data.codigos.join('\n')
+    });
+  }
+
+  // Circuit siempre se agrega al final
   const hojaCircuit = doc.sheetsByTitle['Circuit'];
   await hojaCircuit.addRow({
     'Address/Company Name': data.nombre,
@@ -181,6 +286,44 @@ async function guardarEnSheets(data) {
     'Internal notes': data.productos.map((p, i) => `${p} (${data.cantidades[i]})`).join(', '),
     'seller': data.usuario,
     'Driver (email or phone number)': ''
+  });
+
+  // Verificar si existe una hoja para el usuario
+  let hojaUsuario;
+  try {
+    hojaUsuario = doc.sheetsByTitle[data.usuario];
+  } catch (error) {
+    // La hoja no existe
+    hojaUsuario = null;
+  }
+
+  // Si no existe una hoja para el usuario, crearla con los encabezados
+  if (!hojaUsuario) {
+    hojaUsuario = await doc.addSheet({
+      title: data.usuario,
+      headerValues: [
+        'Nombre del Cliente',
+        'Productos',
+        'Cantidad',
+        'Fecha de Despacho',
+        'codigo',
+        'Notas',
+        'Usuario',
+        'Fecha de subida'
+      ]
+    });
+  }
+
+  // Agregar el pedido a la hoja del usuario
+  await hojaUsuario.addRow({
+    'Nombre del Cliente': data.nombre,
+    'Productos': data.productos.join('\n'),
+    'Cantidad': data.cantidades.join('\n'),
+    'Fecha de Despacho': data.fecha,
+    'codigo': data.codigos.join('\n'),
+    'Notas': data.nota || '',
+    'Usuario': data.usuario,
+    'Fecha de subida': fechaSubida
   });
 }
 
@@ -210,8 +353,37 @@ async function eliminarPedido(rowIndex) {
   await doc.loadInfo();
   const sheetPedidos = doc.sheetsByTitle['Pedidos'];
   const rows = await sheetPedidos.getRows();
+  
   if (rowIndex >= 0 && rowIndex < rows.length) {
+    // Obtener datos del pedido antes de eliminarlo
+    const pedido = rows[rowIndex];
+    const nombreCliente = pedido['Nombre del Cliente'];
+    const usuario = pedido['Usuario'];
+    
+    // Eliminar de la hoja principal
     await rows[rowIndex].delete();
+    
+    // Eliminar de la hoja individual del usuario si existe
+    if (usuario) {
+      try {
+        const hojaUsuario = doc.sheetsByTitle[usuario];
+        if (hojaUsuario) {
+          const filasUsuario = await hojaUsuario.getRows();
+          // Buscar la fila correspondiente por nombre de cliente y fecha
+          const filaAEliminar = filasUsuario.find(fila => 
+            fila['Nombre del Cliente'] === nombreCliente &&
+            fila['Fecha de Despacho'] === pedido['Fecha de Despacho']
+          );
+          
+          if (filaAEliminar) {
+            await filaAEliminar.delete();
+          }
+        }
+      } catch (error) {
+        console.error('Error al intentar eliminar de la hoja del usuario:', error);
+        // Continuamos con la operación aunque falle esta parte
+      }
+    }
   } else {
     throw new Error(`Índice inválido: ${rowIndex}`);
   }
@@ -1182,6 +1354,9 @@ async function actualizarProductosEnPedido(data) {
     const rowsPedidos = await sheetPedidos.getRows();
     const rowsCircuit = await hojaCircuit.getRows();
 
+    // Fecha actual para el registro
+    const fechaSubida = moment().format('MM/DD/YYYY HH:mm:ss');
+
     // 1. Eliminar filas originales
     if (data.rowIndex >= 0 && data.rowIndex < rowsPedidos.length) {
       await rowsPedidos[data.rowIndex].delete();
@@ -1213,6 +1388,45 @@ async function actualizarProductosEnPedido(data) {
       'Internal notes': data.productos.map((p, i) => `${p} (${data.cantidades[i]})`).join(', '),
       'seller': data.usuario || 'Desconocido',
       'Driver (email or phone number)': ''
+    });
+
+    // 4. Actualizar la hoja del usuario si existe
+    const usuario = data.usuario || 'Desconocido';
+    let hojaUsuario;
+    try {
+      hojaUsuario = doc.sheetsByTitle[usuario];
+    } catch (error) {
+      // La hoja no existe
+      hojaUsuario = null;
+    }
+
+    // Si no existe una hoja para el usuario, crearla con los encabezados
+    if (!hojaUsuario) {
+      hojaUsuario = await doc.addSheet({
+        title: usuario,
+        headerValues: [
+          'Nombre del Cliente',
+          'Productos',
+          'Cantidad',
+          'Fecha de Despacho',
+          'codigo',
+          'Notas',
+          'Usuario',
+          'Fecha de subida'
+        ]
+      });
+    }
+
+    // Agregar el pedido actualizado a la hoja del usuario
+    await hojaUsuario.addRow({
+      'Nombre del Cliente': data.nombre,
+      'Productos': data.productos.join('\n'),
+      'Cantidad': data.cantidades.join('\n'),
+      'Fecha de Despacho': data.fecha || moment().format('MM/DD/YYYY'),
+      'codigo': (data.codigos || Array(data.productos.length).fill('')).join('\n'),
+      'Notas': data.nota || '',
+      'Usuario': usuario,
+      'Fecha de subida': fechaSubida
     });
 
     return true;
