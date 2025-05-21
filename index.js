@@ -65,11 +65,15 @@ function normalizar(texto) {
     .replace(/15-40/g, '15w40')
     .replace(/15w-40/g, '15w40')
     .replace(/5w-30/g, '5w30')
+    .replace(/10w-30/g, '10w30')
+    .replace(/10w-40/g, '10w40')
+    .replace(/20w-50/g, '20w50')
+    .replace(/5w-20/g, '5w20')
     .replace(/80-90/g, '80w90')
     .replace(/85-140/g, '85w140');
 }
 
-// Función de similitud de texto simplificada pero efectiva
+// Función de similitud de texto mejorada
 function obtenerSimilitud(str1, str2) {
   const s1 = normalizar(str1);
   const s2 = normalizar(str2);
@@ -79,48 +83,63 @@ function obtenerSimilitud(str1, str2) {
 
   // Comprobación simple de contención
   if (s2.includes(s1) || s1.includes(s2)) {
-    return 0.8; // Dar un puntaje alto para coincidencias directas
+    return 0.9; // Aumentar puntaje para coincidencias directas
   }
 
   // Dividir en palabras y filtrar palabras vacías
   const words1 = s1.split(' ').filter(w => w.length > 0);
   const words2 = s2.split(' ').filter(w => w.length > 0);
   
-  // Contar coincidencias
-  let matches = 0;
+  // Método simple de intersección (como en el código alternativo)
+  const exactMatches = words1.filter(w => words2.includes(w)).length;
+  let similarityScore = exactMatches / Math.max(words1.length, 1);
   
-  for (const word1 of words1) {
-    // Coincidencia exacta
-    if (words2.includes(word1)) {
-      matches += 1;
-      continue;
-    }
+  // Si el puntaje es bajo, intentar con el método más detallado
+  if (similarityScore < 0.3) {
+    // Contar coincidencias
+    let matches = 0;
     
-    // Coincidencia parcial
-    for (const word2 of words2) {
-      // Coincidencia especial para SAE y grados
-      if ((word1 === 'sae' && /^\d+w\d+$/.test(word2)) ||
-          (/^\d+w\d+$/.test(word1) && word1 === word2)) {
+    for (const word1 of words1) {
+      // Coincidencia exacta
+      if (words2.includes(word1)) {
         matches += 1;
-        break;
+        continue;
       }
       
-      // Coincidencia parcial mejorada
-      if (word2.includes(word1) || word1.includes(word2)) {
-        matches += 0.7; // Aumentar el valor para coincidencias parciales
-        break;
+      // Coincidencia parcial
+      for (const word2 of words2) {
+        // Coincidencia especial para SAE y grados
+        if ((word1 === 'sae' && /^\d+w\d+$/.test(word2)) ||
+            (/^\d+w\d+$/.test(word1) && word1 === word2)) {
+          matches += 1;
+          break;
+        }
+        
+        // Coincidencia parcial mejorada
+        if (word2.includes(word1) || word1.includes(word2)) {
+          // Dar mayor peso a coincidencias más largas
+          const minLength = Math.min(word1.length, word2.length);
+          const matchScore = minLength > 2 ? 0.8 : 0.5;
+          matches += matchScore;
+          break;
+        }
       }
     }
+    
+    // Calcular score final con método detallado
+    const detailedScore = matches / Math.max(words1.length, 1);
+    
+    // Usar el mejor de los dos puntajes
+    similarityScore = Math.max(similarityScore, detailedScore);
   }
-
-  // Calcular score final
-  return matches / Math.max(words1.length, 1);
+  
+  return similarityScore;
 }
 
 // Función para filtrar resultados simplificada
 function filtrarResultados(resultados, query) {
-  // Filtrar por un umbral más permisivo
-  const filtrados = resultados.filter(r => r.score > 0.1); // Reducir el umbral a 0.1
+  // Usar un umbral más permisivo
+  const filtrados = resultados.filter(r => r.score > 0.05); // Reducido de 0.1 a 0.05
   
   // Ordenar por score
   const ordenados = filtrados.sort((a, b) => b.score - a.score);
@@ -211,16 +230,38 @@ async function cargarDatos() {
   }
 }
 
-// Buscar dirección
+// Buscar dirección con mejoras
 function buscarDireccion(cliente) {
-  const mejor = direccionesData.map(dir => {
+  // Si no hay cliente o está vacío, devolver string vacío
+  if (!cliente || cliente.trim() === '') return '';
+
+  // Normalizar el nombre del cliente para la búsqueda
+  const clienteNormalizado = normalizar(cliente);
+  
+  // Mapear direcciones con scores
+  const direccionesConScore = direccionesData.map(dir => {
+    // Usar múltiples métodos para calcular la similitud
+    const scorePorPalabras = obtenerSimilitud(cliente, dir.nombre);
+    
+    // Verificar si hay coincidencia exacta de alguna parte del nombre
+    const palabrasCliente = clienteNormalizado.split(' ').filter(p => p.length > 2);
+    const palabrasDir = normalizar(dir.nombre).split(' ').filter(p => p.length > 2);
+    
+    // Buscar palabras específicas que coincidan exactamente
+    const coincidenciasExactas = palabrasCliente.filter(p => palabrasDir.includes(p)).length;
+    const scorePorCoincidencias = coincidenciasExactas / Math.max(palabrasCliente.length, 1);
+    
+    // Usar el mejor score
+    const scoreFinal = Math.max(scorePorPalabras, scorePorCoincidencias);
+    
     return {
       ...dir,
-      score: obtenerSimilitud(cliente, dir.nombre)
+      score: scoreFinal
     };
   }).filter(d => d.score > 0).sort((a, b) => b.score - a.score);
 
-  return mejor.length > 0 ? mejor[0].direccion : '';
+  // Si hay resultados, devolver la mejor coincidencia
+  return direccionesConScore.length > 0 ? direccionesConScore[0].direccion : '';
 }
 
 // Guardar nuevo pedido
@@ -584,17 +625,42 @@ bot.on('message', async (msg) => {
               cantidad = '1';
             }
 
-            // Buscar el producto en el catálogo usando la función de similitud
+            // Buscar el producto en el catálogo usando la función de similitud mejorada
             const encontrados = productosData.map(p => {
-              const score = Math.max(
+              const scoreTexto = Math.max(
                 obtenerSimilitud(nombreProducto, p.memo),
                 obtenerSimilitud(nombreProducto, p.otra || ''),
                 obtenerSimilitud(nombreProducto, p.full || '')
               );
-              return { ...p, score };
+              
+              // Revisar si hay palabras claves exactas (como marcas o tipos)
+              const textoNormalizado = normalizar(nombreProducto);
+              const palabrasClave = textoNormalizado.split(' ').filter(w => w.length > 2);
+              
+              // Dar puntaje extra si contiene palabras clave importantes
+              let scoreExtra = 0;
+              for (const palabra of palabrasClave) {
+                const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
+                const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
+                
+                if (esMarcaImportante || esGradoViscosidad) {
+                  // Verificar si la palabra clave está en alguna descripción
+                  if (normalizar(p.memo).includes(palabra) || 
+                      normalizar(p.otra || '').includes(palabra) || 
+                      normalizar(p.full || '').includes(palabra)) {
+                    scoreExtra += 0.2;
+                  }
+                }
+              }
+              
+              // Combinar scores
+              return { ...p, score: scoreTexto + scoreExtra };
             }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
 
-            if (encontrados.length > 0 && encontrados[0].score > 0.3) { // Umbral de similitud
+            // Umbral adaptativo basado en la longitud del texto
+            const minScore = nombreProducto.length <= 3 ? 0.4 : 0.2;
+            
+            if (encontrados.length > 0 && encontrados[0].score > minScore) {
               productos.push(encontrados[0].memo);
               cantidades.push(cantidad);
               codigos.push(encontrados[0].codigo);
@@ -684,15 +750,40 @@ bot.on('message', async (msg) => {
     case 'agregarProductoRapido':
       try {
         const encontrados = productosData.map(p => {
-          const score = Math.max(
+          const scoreTexto = Math.max(
             obtenerSimilitud(texto, p.memo),
             obtenerSimilitud(texto, p.otra || ''),
             obtenerSimilitud(texto, p.full || '')
           );
-          return { ...p, score };
+          
+          // Revisar si hay palabras claves exactas (como marcas o tipos)
+          const textoNormalizado = normalizar(texto);
+          const palabrasClave = textoNormalizado.split(' ').filter(w => w.length > 2);
+          
+          // Dar puntaje extra si contiene palabras clave importantes
+          let scoreExtra = 0;
+          for (const palabra of palabrasClave) {
+            const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
+            const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
+            
+            if (esMarcaImportante || esGradoViscosidad) {
+              // Verificar si la palabra clave está en alguna descripción
+              if (normalizar(p.memo).includes(palabra) || 
+                  normalizar(p.otra || '').includes(palabra) || 
+                  normalizar(p.full || '').includes(palabra)) {
+                scoreExtra += 0.2;
+              }
+            }
+          }
+          
+          // Combinar scores
+          return { ...p, score: scoreTexto + scoreExtra };
         }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
 
-        if (encontrados.length > 0 && encontrados[0].score > 0.3) {
+        // Umbral adaptativo basado en la longitud del texto
+        const minScore = texto.length <= 3 ? 0.4 : 0.2;
+        
+        if (encontrados.length > 0 && encontrados[0].score > minScore) {
           estado.productoTemporal = encontrados[0];
           estado.paso = 'cantidadProductoRapido';
           bot.sendMessage(chatId, `📦 Ingresa la cantidad para *${encontrados[0].memo}*:`, { parse_mode: 'Markdown' });
@@ -879,18 +970,40 @@ bot.on('message', async (msg) => {
     }
 
     case 'agregarProducto': {
-      // Lógica para agregar producto
       const encontrados = productosData.map(p => {
-        const score = Math.max(
+        const scoreTexto = Math.max(
           obtenerSimilitud(texto, p.memo),
           obtenerSimilitud(texto, p.otra || ''),
           obtenerSimilitud(texto, p.full || '')
         );
-        return { ...p, score };
+        
+        // Revisar si hay palabras claves exactas (como marcas o tipos)
+        const textoNormalizado = normalizar(texto);
+        const palabrasClave = textoNormalizado.split(' ').filter(w => w.length > 2);
+        
+        // Dar puntaje extra si contiene palabras clave importantes
+        let scoreExtra = 0;
+        for (const palabra of palabrasClave) {
+          const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
+          const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
+          
+          if (esMarcaImportante || esGradoViscosidad) {
+            // Verificar si la palabra clave está en alguna descripción
+            if (normalizar(p.memo).includes(palabra) || 
+                normalizar(p.otra || '').includes(palabra) || 
+                normalizar(p.full || '').includes(palabra)) {
+              scoreExtra += 0.2;
+            }
+          }
+        }
+        
+        // Combinar scores
+        return { ...p, score: scoreTexto + scoreExtra };
       }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
 
-      // Aplicar filtrado inteligente
-      const resultadosFiltrados = filtrarResultados(encontrados, texto);
+      // Aplicar filtrado inteligente con umbral adaptativo
+      const minScore = texto.length <= 3 ? 0.3 : 0.05; // Umbral más estricto para búsquedas muy cortas
+      const resultadosFiltrados = encontrados.filter(r => r.score >= minScore).slice(0, 10);
 
       if (resultadosFiltrados.length > 0) {
         estado.opciones = resultadosFiltrados;
@@ -907,7 +1020,6 @@ bot.on('message', async (msg) => {
         estado.entradaManual = texto;
         bot.sendMessage(chatId, '❌ No se encontró ninguna coincidencia.\n¿Qué deseas hacer?\n1️⃣ Buscar otra vez\n2️⃣ Escribir producto manual');
       }
-      
       break;
     }
 
@@ -1225,16 +1337,39 @@ bot.on('message', async (msg) => {
 
     case 'producto':
       const encontrados = productosData.map(p => {
-        const score = Math.max(
+        const scoreTexto = Math.max(
           obtenerSimilitud(texto, p.memo),
           obtenerSimilitud(texto, p.otra || ''),
           obtenerSimilitud(texto, p.full || '')
         );
-        return { ...p, score };
+        
+        // Revisar si hay palabras claves exactas (como marcas o tipos)
+        const textoNormalizado = normalizar(texto);
+        const palabrasClave = textoNormalizado.split(' ').filter(w => w.length > 2);
+        
+        // Dar puntaje extra si contiene palabras clave importantes
+        let scoreExtra = 0;
+        for (const palabra of palabrasClave) {
+          const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
+          const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
+          
+          if (esMarcaImportante || esGradoViscosidad) {
+            // Verificar si la palabra clave está en alguna descripción
+            if (normalizar(p.memo).includes(palabra) || 
+                normalizar(p.otra || '').includes(palabra) || 
+                normalizar(p.full || '').includes(palabra)) {
+              scoreExtra += 0.2;
+            }
+          }
+        }
+        
+        // Combinar scores
+        return { ...p, score: scoreTexto + scoreExtra };
       }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
 
-      // Aplicar filtrado inteligente
-      const resultadosFiltrados = filtrarResultados(encontrados, texto);
+      // Aplicar filtrado inteligente con umbral adaptativo
+      const minScore = texto.length <= 3 ? 0.3 : 0.05; // Umbral más estricto para búsquedas muy cortas
+      const resultadosFiltrados = encontrados.filter(r => r.score >= minScore).slice(0, 10);
 
       if (resultadosFiltrados.length > 0) {
         estado.opciones = resultadosFiltrados;
