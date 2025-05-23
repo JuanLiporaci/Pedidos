@@ -632,19 +632,14 @@ bot.on('message', async (msg) => {
                 obtenerSimilitud(nombreProducto, p.otra || ''),
                 obtenerSimilitud(nombreProducto, p.full || '')
               );
-              
               // Revisar si hay palabras claves exactas (como marcas o tipos)
               const textoNormalizado = normalizar(nombreProducto);
               const palabrasClave = textoNormalizado.split(' ').filter(w => w.length > 2);
-              
-              // Dar puntaje extra si contiene palabras clave importantes
               let scoreExtra = 0;
               for (const palabra of palabrasClave) {
                 const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
                 const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
-                
                 if (esMarcaImportante || esGradoViscosidad) {
-                  // Verificar si la palabra clave está en alguna descripción
                   if (normalizar(p.memo).includes(palabra) || 
                       normalizar(p.otra || '').includes(palabra) || 
                       normalizar(p.full || '').includes(palabra)) {
@@ -652,18 +647,22 @@ bot.on('message', async (msg) => {
                   }
                 }
               }
-              
-              // Combinar scores
               return { ...p, score: scoreTexto + scoreExtra };
             }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
 
             // Umbral adaptativo basado en la longitud del texto
-            const minScore = nombreProducto.length <= 3 ? 0.4 : 0.2;
-            
-            if (encontrados.length > 0 && encontrados[0].score > minScore) {
-              productos.push(encontrados[0].memo);
-              cantidades.push(cantidad);
-              codigos.push(encontrados[0].codigo);
+            const minScore = nombreProducto.length <= 3 ? 0.3 : 0.05;
+            const resultadosFiltrados = encontrados.filter(r => r.score >= minScore).slice(0, 10);
+
+            if (resultadosFiltrados.length > 0) {
+              // Siempre mostrar opciones al usuario para este producto
+              estado.paso = 'esperandoSeleccionRapido';
+              estado.opciones = resultadosFiltrados;
+              estado.productoTemporalCantidad = cantidad;
+              estado.productoTemporalNombre = nombreProducto;
+              const opciones = resultadosFiltrados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
+              await bot.sendMessage(chatId, `🔍 Opciones encontradas para "${nombreProducto}":\n${opciones}\n\nSelecciona el número del producto correcto o escribe una nueva búsqueda.`);
+              return;
             } else {
               productosNoEncontrados.push(nombreProducto);
               productos.push(nombreProducto); // Mantener el nombre original
@@ -671,7 +670,6 @@ bot.on('message', async (msg) => {
               codigos.push('');
             }
           } else if (i === lineas.length - 1) {
-            // Última línea y no es producto, asumimos dirección
             direccionManual = linea;
           }
         }
@@ -747,6 +745,43 @@ bot.on('message', async (msg) => {
       }
       break;
 
+    case 'esperandoSeleccionRapido':
+      const indiceRapidoSel = parseInt(texto);
+      if (!isNaN(indiceRapidoSel) && estado.opciones[indiceRapidoSel - 1]) {
+        const seleccionado = estado.opciones[indiceRapidoSel - 1];
+        if (!estado.pedidoTemporal) {
+          estado.pedidoTemporal = { productos: [], cantidades: [], codigos: [] };
+        }
+        estado.pedidoTemporal.productos.push(seleccionado.memo);
+        estado.pedidoTemporal.cantidades.push(estado.productoTemporalCantidad || '1');
+        estado.pedidoTemporal.codigos.push(seleccionado.codigo);
+        // Limpiar opciones temporales
+        delete estado.opciones;
+        delete estado.productoTemporalCantidad;
+        delete estado.productoTemporalNombre;
+        // Mostrar resumen actualizado
+        const resumenActualizado = estado.pedidoTemporal.productos.map((p, i) => 
+          `• ${p} (${estado.pedidoTemporal.cantidades[i]})`
+        ).join('\n');
+        estado.paso = 'confirmarPedidoRapido';
+        bot.sendMessage(chatId,
+          `📄 *Pedido actualizado:*\n\n` +
+          `${resumenActualizado}\n\n` +
+          `¿Deseas?\n` +
+          `0️⃣ Cancelar pedido\n` +
+          `1️⃣ Añadir otro producto\n` +
+          `2️⃣ Eliminar un producto\n` +
+          `3️⃣ Finalizar pedido\n` +
+          `4️⃣ Modificar dirección`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        // Permitir nueva búsqueda si el usuario escribe texto
+        estado.paso = 'agregarProductoRapido';
+        bot.sendMessage(chatId, '🔍 Escribe el nombre del producto otra vez:');
+      }
+      break;
+
     case 'agregarProductoRapido':
       try {
         const encontrados = productosData.map(p => {
@@ -755,19 +790,13 @@ bot.on('message', async (msg) => {
             obtenerSimilitud(texto, p.otra || ''),
             obtenerSimilitud(texto, p.full || '')
           );
-          
-          // Revisar si hay palabras claves exactas (como marcas o tipos)
           const textoNormalizado = normalizar(texto);
           const palabrasClave = textoNormalizado.split(' ').filter(w => w.length > 2);
-          
-          // Dar puntaje extra si contiene palabras clave importantes
           let scoreExtra = 0;
           for (const palabra of palabrasClave) {
             const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
             const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
-            
             if (esMarcaImportante || esGradoViscosidad) {
-              // Verificar si la palabra clave está en alguna descripción
               if (normalizar(p.memo).includes(palabra) || 
                   normalizar(p.otra || '').includes(palabra) || 
                   normalizar(p.full || '').includes(palabra)) {
@@ -775,22 +804,22 @@ bot.on('message', async (msg) => {
               }
             }
           }
-          
-          // Combinar scores
           return { ...p, score: scoreTexto + scoreExtra };
         }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
-
-        // Umbral adaptativo basado en la longitud del texto
-        const minScore = texto.length <= 3 ? 0.4 : 0.2;
-        
-        if (encontrados.length > 0 && encontrados[0].score > minScore) {
-          estado.productoTemporal = encontrados[0];
-          estado.paso = 'cantidadProductoRapido';
-          bot.sendMessage(chatId, `📦 Ingresa la cantidad para *${encontrados[0].memo}*:`, { parse_mode: 'Markdown' });
+        const minScore = texto.length <= 3 ? 0.3 : 0.05;
+        const resultadosFiltrados = encontrados.filter(r => r.score >= minScore).slice(0, 10);
+        if (resultadosFiltrados.length > 0) {
+          estado.opciones = resultadosFiltrados;
+          estado.paso = 'esperandoSeleccion';
+          const opciones = resultadosFiltrados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
+          await bot.sendMessage(chatId, 
+            `🔍 Opciones encontradas:\n${opciones}\n\nSelecciona el número del producto correcto o escribe una nueva búsqueda.`,
+            { parse_mode: 'Markdown' }
+          );
         } else {
-          estado.productoTemporal = { memo: texto, codigo: '' };
-          estado.paso = 'cantidadProductoRapido';
-          bot.sendMessage(chatId, `⚠️ Producto no encontrado en el catálogo.\n📦 Ingresa la cantidad para *${texto}*:`, { parse_mode: 'Markdown' });
+          estado.paso = 'productoSinCoincidencia';
+          estado.entradaManual = texto;
+          bot.sendMessage(chatId, '❌ No se encontró ninguna coincidencia.\n¿Qué deseas hacer?\n1️⃣ Buscar otra vez\n2️⃣ Escribir producto manual');
         }
       } catch (error) {
         console.error('Error al agregar producto:', error);
@@ -1005,7 +1034,7 @@ bot.on('message', async (msg) => {
       const minScore = texto.length <= 3 ? 0.3 : 0.05; // Umbral más estricto para búsquedas muy cortas
       const resultadosFiltrados = encontrados.filter(r => r.score >= minScore).slice(0, 10);
 
-      if (resultadosFiltrados.length > 0) {
+      if (resultadosFiltrados.length > 1) {
         estado.opciones = resultadosFiltrados;
         estado.paso = 'esperandoSeleccion';
         const opciones = resultadosFiltrados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
@@ -1015,6 +1044,11 @@ bot.on('message', async (msg) => {
           `🔍 Selecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
           { parse_mode: 'Markdown' }
         );
+      } else if (resultadosFiltrados.length === 1) {
+        estado.productos.push(resultadosFiltrados[0].memo);
+        estado.codigos.push(resultadosFiltrados[0].codigo);
+        estado.paso = 'cantidad';
+        bot.sendMessage(chatId, `📦 Escribe la cantidad para *${resultadosFiltrados[0].memo}*:`, { parse_mode: 'Markdown' });
       } else {
         estado.paso = 'productoSinCoincidencia';
         estado.entradaManual = texto;
@@ -1342,19 +1376,13 @@ bot.on('message', async (msg) => {
           obtenerSimilitud(texto, p.otra || ''),
           obtenerSimilitud(texto, p.full || '')
         );
-        
-        // Revisar si hay palabras claves exactas (como marcas o tipos)
         const textoNormalizado = normalizar(texto);
         const palabrasClave = textoNormalizado.split(' ').filter(w => w.length > 2);
-        
-        // Dar puntaje extra si contiene palabras clave importantes
         let scoreExtra = 0;
         for (const palabra of palabrasClave) {
           const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
           const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
-          
           if (esMarcaImportante || esGradoViscosidad) {
-            // Verificar si la palabra clave está en alguna descripción
             if (normalizar(p.memo).includes(palabra) || 
                 normalizar(p.otra || '').includes(palabra) || 
                 normalizar(p.full || '').includes(palabra)) {
@@ -1362,23 +1390,16 @@ bot.on('message', async (msg) => {
             }
           }
         }
-        
-        // Combinar scores
         return { ...p, score: scoreTexto + scoreExtra };
       }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
-
-      // Aplicar filtrado inteligente con umbral adaptativo
-      const minScore = texto.length <= 3 ? 0.3 : 0.05; // Umbral más estricto para búsquedas muy cortas
+      const minScore = texto.length <= 3 ? 0.3 : 0.05;
       const resultadosFiltrados = encontrados.filter(r => r.score >= minScore).slice(0, 10);
-
       if (resultadosFiltrados.length > 0) {
         estado.opciones = resultadosFiltrados;
         estado.paso = 'esperandoSeleccion';
         const opciones = resultadosFiltrados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
-        
         await enviarMensajeLargo(chatId, 
-          `🔍 Resultados más relevantes:\n\n${opciones}\n\n` +
-          `🔍 Selecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
+          `🔍 Opciones encontradas:\n${opciones}\n\nSelecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
           { parse_mode: 'Markdown' }
         );
       } else {
