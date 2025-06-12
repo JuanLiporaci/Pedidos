@@ -57,4 +57,6 @@ El bot espera encontrar las siguientes hojas en el Google Sheet:
 ## Comandos del bot
 
 - `/start`: Iniciar interacción con el bot
-- `000`: Reiniciar el bot en cualquier momento 
+- `000`: Reiniciar el bot en cualquier momento
+
+<!-- Dummy commit para forzar redeploy en Railway --> 
