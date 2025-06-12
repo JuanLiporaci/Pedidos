@@ -639,11 +639,21 @@ bot.on('message', async (msg) => {
               for (const palabra of palabrasClave) {
                 const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
                 const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
+                // NUEVO: Dar peso extra si el producto contiene 'synthetic', 'hdmo' o 'bulk'
+                const esPalabraClaveEspecial = ['synthetic', 'hdmo', 'bulk'].includes(palabra);
                 if (esMarcaImportante || esGradoViscosidad) {
                   if (normalizar(p.memo).includes(palabra) || 
                       normalizar(p.otra || '').includes(palabra) || 
                       normalizar(p.full || '').includes(palabra)) {
                     scoreExtra += 0.2;
+                  }
+                }
+                // NUEVO: Peso extra para palabras clave especiales
+                if (esPalabraClaveEspecial) {
+                  if (normalizar(p.memo).includes(palabra) || 
+                      normalizar(p.otra || '').includes(palabra) || 
+                      normalizar(p.full || '').includes(palabra)) {
+                    scoreExtra += 0.3; // Más peso para asegurar que suba en el ranking
                   }
                 }
               }
