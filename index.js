@@ -6,6 +6,10 @@ const config = require('./config');
 // Configuración de variables de entorno
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TOKEN) {
+  const envDebug = Object.keys(process.env)
+    .filter(k => /TELEGRAM|GOOGLE|SHEET|SPREAD|RAILWAY/i.test(k))
+    .sort();
+  console.error('ENV_DEBUG_KEYS:', envDebug);
   throw new Error('TELEGRAM_BOT_TOKEN no está configurado. Define la variable de entorno en Railway o localmente.');
 }
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1CNyD_seHZZyB-2NPusYEpNGF8m5LzUz87RHIYitfnAU';
