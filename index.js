@@ -345,6 +345,16 @@ async function cargarDatos() {
   } catch (error) {
     console.error('Error al cargar datos:', error);
     
+    // Verificar si es un error de credenciales
+    if (error.message && error.message.includes('Invalid JWT Signature')) {
+      console.error('❌ ERROR DE CREDENCIALES: Las credenciales de Google están inválidas');
+      console.error('💡 Solución: Regenera las credenciales en Google Cloud Console');
+      console.error('📖 Ver archivo fix-credentials.md para instrucciones');
+    } else if (error.message && error.message.includes('invalid_grant')) {
+      console.error('❌ ERROR DE AUTENTICACIÓN: Token de Google inválido');
+      console.error('💡 Solución: Verifica las credenciales en Railway');
+    }
+    
     // Si hay un error, cargar algunos productos predeterminados para que la búsqueda funcione
     productosData = [
       { codigo: 'MOIL15W40', memo: 'Mobil Delvac MX 15W40 Galon', otra: 'Aceite Mobil Delvac 15W40 SAE', full: 'Mobil Delvac MX ESP 15W40' },
