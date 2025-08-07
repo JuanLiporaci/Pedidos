@@ -10,27 +10,48 @@ if (!TOKEN) {
 }
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1CNyD_seHZZyB-2NPusYEpNGF8m5LzUz87RHIYitfnAU';
 
-// Configuración de credenciales de Google
+// Configuración de credenciales de Google (acepta JSON o Base64)
 let GOOGLE_CREDENTIALS;
 try {
-  if (process.env.GOOGLE_CREDENTIALS) {
-    // En producción, las credenciales están en variable de entorno
-    GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-    console.log('Usando credenciales desde variable de entorno');
+  const credsRaw = process.env.GOOGLE_CREDENTIALS;
+  if (credsRaw) {
+    let parsed;
+    try {
+      // Intentar como JSON directo
+      parsed = JSON.parse(credsRaw);
+      console.log('Usando credenciales desde variable de entorno (JSON)');
+    } catch (_errJson) {
+      try {
+        // Intentar como Base64 -> JSON
+        const decoded = Buffer.from(credsRaw, 'base64').toString('utf8');
+        parsed = JSON.parse(decoded);
+        console.log('Usando credenciales desde variable de entorno (Base64)');
+      } catch (_errB64) {
+        throw new Error('GOOGLE_CREDENTIALS no es JSON válido ni Base64 de JSON');
+      }
+    }
+
+    // Validaciones mínimas
+    if (parsed.type !== 'service_account') {
+      throw new Error('GOOGLE_CREDENTIALS: el campo "type" debe ser "service_account"');
+    }
+    if (!parsed.client_email) {
+      throw new Error('GOOGLE_CREDENTIALS: falta "client_email"');
+    }
+    if (!parsed.private_key || !parsed.private_key.includes('BEGIN PRIVATE KEY')) {
+      throw new Error('GOOGLE_CREDENTIALS: "private_key" inválida o ausente');
+    }
+
+    GOOGLE_CREDENTIALS = parsed;
+    console.log(`Cuenta de servicio: ${parsed.client_email}`);
   } else {
     // En desarrollo, las credenciales están en archivo local
     GOOGLE_CREDENTIALS = require('./credentials.json');
     console.log('Usando credenciales desde archivo local');
   }
 } catch (error) {
-  console.error('Error al cargar credenciales:', error);
-  // Credenciales de respaldo para pruebas (no funcionarán en producción)
-  GOOGLE_CREDENTIALS = {
-    type: 'service_account',
-    project_id: 'proyecto-demo',
-    client_email: 'ejemplo@proyecto-demo.iam.gserviceaccount.com'
-  };
-  console.warn('Usando credenciales de respaldo (solo para desarrollo)');
+  console.error('Error al cargar/validar GOOGLE_CREDENTIALS:', error.message);
+  throw error;
 }
 
 // Configuración del bot usando el archivo de configuración
