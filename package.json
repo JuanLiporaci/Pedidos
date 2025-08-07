@@ -10,7 +10,8 @@
     "restart": "node start.js",
     "deploy": "powershell -ExecutionPolicy Bypass -File deploy.ps1",
     "kill-bot": "powershell -ExecutionPolicy Bypass -File kill-bot.ps1",
-    "check-status": "powershell -ExecutionPolicy Bypass -File check-status.ps1"
+    "check-status": "powershell -ExecutionPolicy Bypass -File check-status.ps1",
+    "convert-credentials": "powershell -ExecutionPolicy Bypass -File convert-credentials.ps1"
   },
   "keywords": [],
   "author": "",
