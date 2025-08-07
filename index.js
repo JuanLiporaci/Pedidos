@@ -65,7 +65,7 @@ const botOptions = config.bot;
 const bot = new TelegramBot(TOKEN, botOptions);
 
 // Variable para controlar el estado del bot
-let botRunning = false;
+let botRunning = true; // marcar activo para no ignorar mensajes prematuramente
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = config.reconnection.maxAttempts;
 
@@ -741,12 +741,6 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const texto = msg.text?.trim();
   const usuario = msg.from.username || msg.from.first_name || 'Desconocido';
-
-  // Verificar que el bot esté funcionando
-  if (!botRunning) {
-    console.log('Bot no está ejecutándose, ignorando mensaje');
-    return;
-  }
 
   // Validar que el mensaje sea válido
   if (!texto || texto.length === 0) {
