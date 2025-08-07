@@ -8,7 +8,8 @@
     "dev": "nodemon index.js",
     "start:robust": "node start.js",
     "restart": "node start.js",
-    "deploy": "powershell -ExecutionPolicy Bypass -File deploy.ps1"
+    "deploy": "powershell -ExecutionPolicy Bypass -File deploy.ps1",
+    "kill-bot": "powershell -ExecutionPolicy Bypass -File kill-bot.ps1"
   },
   "keywords": [],
   "author": "",

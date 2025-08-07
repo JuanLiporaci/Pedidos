@@ -198,7 +198,7 @@ function obtenerSimilitud(str1, str2) {
   const words1 = s1.split(' ').filter(w => w.length > 0);
   const words2 = s2.split(' ').filter(w => w.length > 0);
   
-  // Método simple de intersección (como en el código alternativo)
+  // Método simple de intersección
   const exactMatches = words1.filter(w => words2.includes(w)).length;
   let similarityScore = exactMatches / Math.max(words1.length, 1);
   
@@ -242,6 +242,38 @@ function obtenerSimilitud(str1, str2) {
   }
   
   return similarityScore;
+}
+
+// Función mejorada para buscar productos
+function buscarProductos(query) {
+  if (!query || query.trim() === '') return [];
+  
+  const queryNormalizado = normalizar(query);
+  console.log(`Buscando: "${query}" (normalizado: "${queryNormalizado}")`);
+  
+  const resultados = productosData.map(producto => {
+    // Calcular similitud con todas las descripciones
+    const scoreMemo = obtenerSimilitud(query, producto.memo || '');
+    const scoreOtra = obtenerSimilitud(query, producto.otra || '');
+    const scoreFull = obtenerSimilitud(query, producto.full || '');
+    const scoreCodigo = obtenerSimilitud(query, producto.codigo || '');
+    
+    // Usar el mejor score
+    const scoreFinal = Math.max(scoreMemo, scoreOtra, scoreFull, scoreCodigo);
+    
+    // Bonus para coincidencias exactas
+    if (normalizar(producto.memo).includes(queryNormalizado) || 
+        normalizar(producto.otra).includes(queryNormalizado) ||
+        normalizar(producto.full).includes(queryNormalizado) ||
+        normalizar(producto.codigo).includes(queryNormalizado)) {
+      return { ...producto, score: scoreFinal + 0.2 };
+    }
+    
+    return { ...producto, score: scoreFinal };
+  }).filter(p => p.score > 0.1); // Umbral más bajo para capturar más resultados
+  
+  // Ordenar por score y limitar resultados
+  return resultados.sort((a, b) => b.score - a.score).slice(0, 10);
 }
 
 // Función para filtrar resultados simplificada
@@ -324,7 +356,17 @@ async function cargarDatos() {
       { codigo: 'DELO15W40', memo: 'Chevron Delo 600 ADF 15W40 Galon', otra: 'Aceite Chevron Delo 600 ADF SAE 15W40', full: 'Chevron Delo 600 ADF 15W40' },
       { codigo: 'SAE90', memo: 'Valvoline SAE 90 Galon', otra: 'Aceite Valvoline SAE 90', full: 'Valvoline SAE 90' },
       { codigo: 'SAE140', memo: 'Valvoline SAE 140 Galon', otra: 'Aceite Valvoline SAE 140', full: 'Valvoline SAE 140' },
-      { codigo: 'HIDRAULICO', memo: 'Aceite Hidraulico AW68', otra: 'Aceite Hidraulico AW 68', full: 'Aceite Hidraulico AW68' }
+      { codigo: 'HIDRAULICO', memo: 'Aceite Hidraulico AW68', otra: 'Aceite Hidraulico AW 68', full: 'Aceite Hidraulico AW68' },
+      { codigo: 'COOLANT', memo: 'Coolant/Anticongelante', otra: 'Líquido refrigerante', full: 'Coolant Anticongelante' },
+      { codigo: 'MISTYK', memo: 'Mistyk', otra: 'Producto Mistyk', full: 'Mistyk' },
+      { codigo: 'ACEITE', memo: 'Aceite', otra: 'Aceite lubricante', full: 'Aceite' },
+      { codigo: 'ROTELLA', memo: 'Rotella', otra: 'Aceite Rotella', full: 'Rotella' },
+      { codigo: 'DELO', memo: 'Delo', otra: 'Aceite Delo', full: 'Delo' },
+      { codigo: 'MOBIL', memo: 'Mobil', otra: 'Aceite Mobil', full: 'Mobil' },
+      { codigo: 'SHELL', memo: 'Shell', otra: 'Aceite Shell', full: 'Shell' },
+      { codigo: 'VALVOLINE', memo: 'Valvoline', otra: 'Aceite Valvoline', full: 'Valvoline' },
+      { codigo: 'CHEVRON', memo: 'Chevron', otra: 'Aceite Chevron', full: 'Chevron' },
+      { codigo: 'BLACKGOLD', memo: 'Black Gold', otra: 'Aceite Black Gold', full: 'Black Gold' }
     ];
     
     // Cargar algunas direcciones predeterminadas
@@ -1533,34 +1575,13 @@ bot.on('message', async (msg) => {
       break;
 
     case 'producto':
-      const encontrados = productosData.map(p => {
-        const scoreTexto = Math.max(
-          obtenerSimilitud(texto, p.memo),
-          obtenerSimilitud(texto, p.otra || ''),
-          obtenerSimilitud(texto, p.full || '')
-        );
-        const textoNormalizado = normalizar(texto);
-        const palabrasClave = textoNormalizado.split(' ').filter(w => w.length > 2);
-        let scoreExtra = 0;
-        for (const palabra of palabrasClave) {
-          const esMarcaImportante = ['mobil', 'shell', 'delo', 'rotella', 'chevron', 'valvoline'].includes(palabra);
-          const esGradoViscosidad = /^\d+w\d+$/.test(palabra) || palabra === 'sae';
-          if (esMarcaImportante || esGradoViscosidad) {
-            if (normalizar(p.memo).includes(palabra) || 
-                normalizar(p.otra || '').includes(palabra) || 
-                normalizar(p.full || '').includes(palabra)) {
-              scoreExtra += 0.2;
-            }
-          }
-        }
-        return { ...p, score: scoreTexto + scoreExtra };
-      }).filter(p => p.score > 0).sort((a, b) => b.score - a.score);
-      const minScore = texto.length <= 3 ? 0.3 : 0.05;
-      const resultadosFiltrados = encontrados.filter(r => r.score >= minScore).slice(0, 10);
-      if (resultadosFiltrados.length > 0) {
-        estado.opciones = resultadosFiltrados;
+      const resultados = buscarProductos(texto);
+      console.log(`Resultados encontrados para "${texto}":`, resultados.length);
+      
+      if (resultados.length > 0) {
+        estado.opciones = resultados;
         estado.paso = 'esperandoSeleccion';
-        const opciones = resultadosFiltrados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
+        const opciones = resultados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
         await enviarMensajeLargo(chatId, 
           `🔍 Opciones encontradas:\n${opciones}\n\nSelecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
           { parse_mode: 'Markdown' }
