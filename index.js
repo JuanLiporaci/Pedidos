@@ -4,7 +4,10 @@ const moment = require('moment');
 const config = require('./config');
 
 // Configuración de variables de entorno
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7754946488:AAE6XjHw18y8b73W6k_dGXk92mgYwn2-yhU';
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+if (!TOKEN) {
+  throw new Error('TELEGRAM_BOT_TOKEN no está configurado. Define la variable de entorno en Railway o localmente.');
+}
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1CNyD_seHZZyB-2NPusYEpNGF8m5LzUz87RHIYitfnAU';
 
 // Configuración de credenciales de Google
