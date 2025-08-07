@@ -1,6 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const moment = require('moment');
+const config = require('./config');
 
 // Configuración de variables de entorno
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7754946488:AAE6XjHw18y8b73W6k_dGXk92mgYwn2-yhU';
@@ -29,23 +30,113 @@ try {
   console.warn('Usando credenciales de respaldo (solo para desarrollo)');
 }
 
-// Inicializar el bot con polling
-const bot = new TelegramBot(TOKEN, { polling: true });
+// Configuración del bot usando el archivo de configuración
+const botOptions = config.bot;
 
-// Manejar errores de conexión
+// Inicializar el bot con configuración mejorada
+const bot = new TelegramBot(TOKEN, botOptions);
+
+// Variable para controlar el estado del bot
+let botRunning = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = config.reconnection.maxAttempts;
+
+// Función para reiniciar el bot de forma segura
+async function restartBot() {
+  if (botRunning) {
+    console.log('Deteniendo bot actual...');
+    try {
+      await bot.stopPolling();
+      botRunning = false;
+    } catch (error) {
+      console.error('Error al detener bot:', error);
+    }
+  }
+  
+  // Esperar un momento antes de reiniciar
+  await new Promise(resolve => setTimeout(resolve, config.reconnection.delayBeforeRestart));
+  
+  console.log('Reiniciando bot...');
+  try {
+    await bot.startPolling(botOptions.polling);
+    botRunning = true;
+    reconnectAttempts = 0;
+    console.log('Bot reiniciado exitosamente');
+  } catch (error) {
+    console.error('Error al reiniciar bot:', error);
+    reconnectAttempts++;
+    
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      console.log(`Intento de reconexión ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} en ${config.reconnection.delayBetweenAttempts/1000} segundos...`);
+      setTimeout(restartBot, config.reconnection.delayBetweenAttempts);
+    } else {
+      console.error('Se alcanzó el máximo de intentos de reconexión. Deteniendo bot.');
+      process.exit(1);
+    }
+  }
+}
+
+// Manejar errores de conexión mejorado
 bot.on('polling_error', (error) => {
-  console.error('Error en el polling de Telegram:', error);
+  console.error('Error en el polling de Telegram:', error.message);
   
   if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET') {
-    console.log('Error de conexión temporal. El bot intentará reconectarse automáticamente.');
+    console.log('Error de conexión temporal. Intentando reconectar...');
+    if (!botRunning) {
+      restartBot();
+    }
   } else if (error.code === 'ENOTFOUND') {
     console.error('No se pudo resolver el host. Verifica la conexión a internet.');
   } else if (error.response && error.response.statusCode === 401) {
     console.error('Error de autenticación. Verifica el TOKEN del bot.');
+    process.exit(1);
   } else if (error.response && error.response.statusCode === 409) {
     console.error('Conflicto de actualización: otro proceso ya está usando este bot.');
+    console.log('Deteniendo bot actual...');
+    process.exit(1);
   } else {
-    console.error('Error desconocido en el polling:', error);
+    console.error('Error desconocido en el polling:', error.message);
+    // Solo reiniciar si no es un error crítico
+    if (!botRunning && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      restartBot();
+    }
+  }
+});
+
+// Evento cuando el bot se conecta exitosamente
+bot.on('polling_start', () => {
+  console.log('✅ Bot iniciado correctamente - Polling activo');
+  botRunning = true;
+});
+
+// Evento cuando el bot se desconecta
+bot.on('polling_stop', () => {
+  console.log('🛑 Bot detenido - Polling inactivo');
+  botRunning = false;
+});
+
+// Manejar señales de terminación del proceso
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Recibida señal SIGINT. Deteniendo bot...');
+  try {
+    await bot.stopPolling();
+    console.log('Bot detenido correctamente');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error al detener bot:', error);
+    process.exit(1);
+  }
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 Recibida señal SIGTERM. Deteniendo bot...');
+  try {
+    await bot.stopPolling();
+    console.log('Bot detenido correctamente');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error al detener bot:', error);
+    process.exit(1);
   }
 });
 
@@ -53,6 +144,23 @@ bot.on('polling_error', (error) => {
 const estados = {};
 let productosData = [];
 let direccionesData = [];
+
+// Función para limpiar estados antiguos (evitar acumulación de memoria)
+function limpiarEstadosAntiguos() {
+  const ahora = Date.now();
+  const TIEMPO_LIMITE = config.cleanup.stateTimeout;
+  
+  Object.keys(estados).forEach(chatId => {
+    if (!estados[chatId].ultimaActividad || 
+        (ahora - estados[chatId].ultimaActividad) > TIEMPO_LIMITE) {
+      console.log(`Limpiando estado antiguo para chat ${chatId}`);
+      delete estados[chatId];
+    }
+  });
+}
+
+// Ejecutar limpieza según la configuración
+setInterval(limpiarEstadosAntiguos, config.cleanup.cleanupInterval);
 
 // Función para normalizar texto
 function normalizar(texto) {
@@ -430,47 +538,67 @@ async function eliminarPedido(rowIndex) {
   }
 }
 
-// Función auxiliar para enviar mensajes largos
+// Función auxiliar para enviar mensajes largos con manejo de errores
 async function enviarMensajeLargo(chatId, texto, options = {}) {
-  const MAX_LENGTH = 4000; // Un poco menos que el límite de Telegram para estar seguros
-  
-  if (texto.length <= MAX_LENGTH) {
-    return bot.sendMessage(chatId, texto, options);
-  }
+  try {
+    const MAX_LENGTH = config.messages.maxLength;
+    
+    if (texto.length <= MAX_LENGTH) {
+      return await bot.sendMessage(chatId, texto, options);
+    }
 
-  // Dividir el texto en partes
-  let partes = [];
-  let currentPart = '';
-  const lineas = texto.split('\n');
+    // Dividir el texto en partes
+    let partes = [];
+    let currentPart = '';
+    const lineas = texto.split('\n');
 
-  for (const linea of lineas) {
-    if (currentPart.length + linea.length + 1 > MAX_LENGTH) {
+    for (const linea of lineas) {
+      if (currentPart.length + linea.length + 1 > MAX_LENGTH) {
+        partes.push(currentPart);
+        currentPart = linea;
+      } else {
+        currentPart += (currentPart ? '\n' : '') + linea;
+      }
+    }
+    if (currentPart) {
       partes.push(currentPart);
-      currentPart = linea;
-    } else {
-      currentPart += (currentPart ? '\n' : '') + linea;
     }
-  }
-  if (currentPart) {
-    partes.push(currentPart);
-  }
 
-  // Enviar cada parte
-  for (let i = 0; i < partes.length; i++) {
-    const esPrimeraParte = i === 0;
-    const esUltimaParte = i === partes.length - 1;
-    
-    let mensaje = partes[i];
-    if (!esPrimeraParte) {
-      mensaje = '(continuación...)\n\n' + mensaje;
+    // Enviar cada parte con delay para evitar rate limiting
+    for (let i = 0; i < partes.length; i++) {
+      const esPrimeraParte = i === 0;
+      const esUltimaParte = i === partes.length - 1;
+      
+      let mensaje = partes[i];
+      if (!esPrimeraParte) {
+        mensaje = '(continuación...)\n\n' + mensaje;
+      }
+      if (!esUltimaParte) {
+        mensaje += '\n\n(continúa...)';
+      }
+      
+      // Solo usar las opciones de formato en la última parte si hay botones
+      const messageOptions = esUltimaParte ? options : { parse_mode: options.parse_mode };
+      
+      try {
+        await bot.sendMessage(chatId, mensaje, messageOptions);
+        // Pequeño delay entre mensajes para evitar rate limiting
+        if (!esUltimaParte) {
+          await new Promise(resolve => setTimeout(resolve, config.messages.delayBetweenParts));
+        }
+      } catch (error) {
+        console.error(`Error al enviar parte ${i + 1} del mensaje:`, error.message);
+        // Continuar con la siguiente parte
+      }
     }
-    if (!esUltimaParte) {
-      mensaje += '\n\n(continúa...)';
+  } catch (error) {
+    console.error('Error en enviarMensajeLargo:', error.message);
+    // Intentar enviar un mensaje de error simple
+    try {
+      await bot.sendMessage(chatId, '❌ Error al enviar mensaje. Por favor, intenta nuevamente.');
+    } catch (sendError) {
+      console.error('Error al enviar mensaje de error:', sendError.message);
     }
-    
-    // Solo usar las opciones de formato en la última parte si hay botones
-    const messageOptions = esUltimaParte ? options : { parse_mode: options.parse_mode };
-    await bot.sendMessage(chatId, mensaje, messageOptions);
   }
 }
 
@@ -528,26 +656,51 @@ function crearObjetoPedido(pedidoSeleccionado, nuevasFechas = {}) {
   };
 }
 
-// Manejador de mensajes
+// Manejador de mensajes mejorado con control de redundancia
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const texto = msg.text?.trim();
   const usuario = msg.from.username || msg.from.first_name || 'Desconocido';
 
+  // Verificar que el bot esté funcionando
+  if (!botRunning) {
+    console.log('Bot no está ejecutándose, ignorando mensaje');
+    return;
+  }
+
+  // Validar que el mensaje sea válido
+  if (!texto || texto.length === 0) {
+    return;
+  }
+
   // Código de reinicio
   if (texto === '000') {
     delete estados[chatId];
-    return bot.sendMessage(chatId, '🔄 Bot reiniciado.\n\n👋 ¿Qué deseas hacer?\n1️⃣ Hacer un nuevo pedido (paso a paso)\n2️⃣ Modificar un pedido viejo\n3️⃣ Nuevo pedido rápido');
+    try {
+      await bot.sendMessage(chatId, '🔄 Bot reiniciado.\n\n👋 ¿Qué deseas hacer?\n1️⃣ Hacer un nuevo pedido (paso a paso)\n2️⃣ Modificar un pedido viejo\n3️⃣ Nuevo pedido rápido');
+    } catch (error) {
+      console.error('Error al enviar mensaje de reinicio:', error.message);
+    }
+    return;
   }
 
+  // Inicializar estado si no existe
   if (!estados[chatId]) {
     estados[chatId] = { paso: 'inicio' };
-    return bot.sendMessage(chatId, '👋 ¿Qué deseas hacer?\n1️⃣ Hacer un nuevo pedido (paso a paso)\n2️⃣ Modificar un pedido viejo\n3️⃣ Nuevo pedido rápido');
+    try {
+      await bot.sendMessage(chatId, '👋 ¿Qué deseas hacer?\n1️⃣ Hacer un nuevo pedido (paso a paso)\n2️⃣ Modificar un pedido viejo\n3️⃣ Nuevo pedido rápido');
+    } catch (error) {
+      console.error('Error al enviar mensaje inicial:', error.message);
+    }
+    return;
   }
 
   const estado = estados[chatId];
+  
+  // Registrar actividad del usuario
+  estado.ultimaActividad = Date.now();
 
-  // Antes del switch, declaramos las variables que se usarán en múltiples casos
+  // Variables para el switch
   let indiceAEliminar;
   let resultadoEliminar;
   let resultadoFecha;

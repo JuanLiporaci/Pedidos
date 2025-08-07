@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "start:robust": "node start.js",
+    "restart": "node start.js",
+    "deploy": "powershell -ExecutionPolicy Bypass -File deploy.ps1"
   },
   "keywords": [],
   "author": "",

@@ -59,4 +59,49 @@ El bot espera encontrar las siguientes hojas en el Google Sheet:
 - `/start`: Iniciar interacción con el bot
 - `000`: Reiniciar el bot en cualquier momento
 
+## Mejoras implementadas
+
+### 🔧 Configuración mejorada
+- **Archivo de configuración separado** (`config.js`) para fácil personalización
+- **Manejo robusto de errores** con reconexión automática
+- **Control de rate limiting** para evitar bloqueos de Telegram
+- **Limpieza automática de estados** para evitar acumulación de memoria
+
+### 🚀 Scripts de inicio
+- `npm start`: Inicio normal del bot
+- `npm run start:robust`: Inicio con reinicio automático en caso de fallos
+- `npm run restart`: Reinicio del bot
+- `npm run dev`: Desarrollo con nodemon
+
+### 🛡️ Manejo de errores
+- **Reconexión automática** en caso de errores de red
+- **Manejo de señales** (SIGINT, SIGTERM) para cierre limpio
+- **Logging mejorado** para debugging
+- **Timeouts configurables** para diferentes operaciones
+
+### 📊 Monitoreo
+- **Estado del bot** en tiempo real
+- **Limpieza de estados** cada 15 minutos
+- **Contador de intentos de reconexión**
+
+## Solución de problemas
+
+### Error de conexión
+Si el bot muestra errores de conexión:
+1. Verifica tu conexión a internet
+2. Asegúrate de que el token del bot sea válido
+3. Usa `npm run start:robust` para reinicio automático
+
+### Bot redundante
+Si el bot responde múltiples veces:
+1. Detén todos los procesos del bot
+2. Limpia los estados: `node -e "console.log('Estados limpiados')"`
+3. Reinicia con `npm run start:robust`
+
+### Rate limiting
+Si recibes errores de rate limiting:
+1. El bot automáticamente reduce la frecuencia de mensajes
+2. Espera unos minutos antes de enviar más mensajes
+3. Considera aumentar los delays en `config.js`
+
 <!-- Dummy commit para forzar redeploy en Railway --> 
