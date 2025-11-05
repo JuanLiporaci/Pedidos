@@ -192,6 +192,11 @@ setInterval(limpiarEstadosAntiguos, config.cleanup.cleanupInterval);
 
 // Función para normalizar texto
 function normalizar(texto) {
+  // Manejar valores undefined, null o no-string
+  if (!texto || typeof texto !== 'string') {
+    return '';
+  }
+  
   return texto.toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, '')
