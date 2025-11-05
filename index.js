@@ -686,6 +686,7 @@ async function enviarMensajeLargo(chatId, texto, options = {}) {
 function procesarFecha(texto) {
   const fechaHoy = new Date();
   const anioHoy = fechaHoy.getFullYear();
+  const mesActual = fechaHoy.getMonth() + 1; // getMonth() devuelve 0-11, sumamos 1
   const [mesPedido, diaPedido] = texto.split('/');
 
   if (!mesPedido || !diaPedido || 
@@ -693,6 +694,12 @@ function procesarFecha(texto) {
       mesPedido < 1 || mesPedido > 12 || 
       diaPedido < 1 || diaPedido > 31) {
     return { error: '❌ Fecha inválida. Usa el formato MM/DD.' };
+  }
+
+  // Validar que el mes ingresado coincida con el mes actual
+  const mesPedidoNum = parseInt(mesPedido, 10);
+  if (mesPedidoNum !== mesActual) {
+    return { error: `❌ Solo puedes ingresar fechas del mes actual. El mes actual es ${mesActual.toString().padStart(2, '0')}.` };
   }
 
   const fechaDespacho = new Date(
@@ -1480,19 +1487,17 @@ bot.on('message', async (msg) => {
     }
 
     case 'modificarFecha': {
-      const [mes, dia] = texto.split('/');
-      if (!mes || !dia || isNaN(mes) || isNaN(dia)) {
-        return bot.sendMessage(chatId, '❌ Formato inválido. Usa MM/DD');
+      const resultadoFecha = procesarFecha(texto);
+      if (resultadoFecha.error) {
+        return bot.sendMessage(chatId, resultadoFecha.error);
       }
 
       try {
-        const nuevaFecha = `${mes.padStart(2, '0')}/${dia.padStart(2, '0')}/${new Date().getFullYear()}`;
-        
         // Actualizar el pedido con la nueva fecha
-        await actualizarProductosEnPedido(crearObjetoPedido(estado.pedidoSeleccionado, { fecha: nuevaFecha }));
+        await actualizarProductosEnPedido(crearObjetoPedido(estado.pedidoSeleccionado, { fecha: resultadoFecha.fecha }));
         
         // Actualizar el estado después de guardar exitosamente
-        estado.pedidoSeleccionado.fecha = nuevaFecha;
+        estado.pedidoSeleccionado.fecha = resultadoFecha.fecha;
         estado.paso = 'continuarEdicion';
         bot.sendMessage(chatId, `✅ Fecha actualizada\n1️⃣ Seguir editando\n2️⃣ Terminar`);
       } catch (error) {
