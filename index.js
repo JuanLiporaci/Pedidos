@@ -1309,6 +1309,24 @@ bot.on('message', async (msg) => {
         estado.codigos.push(seleccionado.codigo);
         estado.paso = 'cantidad';
         bot.sendMessage(chatId, `📦 Escribe la cantidad para *${seleccionado.memo}*:`, { parse_mode: 'Markdown' });
+      } else {
+        // Si no es un número válido, ejecutar búsqueda directamente con el texto ingresado
+        const resultados = buscarProductos(texto);
+        console.log(`Resultados encontrados para "${texto}":`, resultados.length);
+        
+        if (resultados.length > 0) {
+          estado.opciones = resultados;
+          estado.paso = 'esperandoSeleccion';
+          const opciones = resultados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
+          await enviarMensajeLargo(chatId, 
+            `🔍 Opciones encontradas:\n${opciones}\n\nSelecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
+            { parse_mode: 'Markdown' }
+          );
+        } else {
+          estado.paso = 'productoSinCoincidencia';
+          estado.entradaManual = texto;
+          bot.sendMessage(chatId, '❌ No se encontró ninguna coincidencia.\n¿Qué deseas hacer?\n1️⃣ Buscar otra vez\n2️⃣ Escribir producto manual');
+        }
       }
       break;
 
