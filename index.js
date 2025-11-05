@@ -1736,6 +1736,7 @@ bot.on('message', async (msg) => {
       bot.sendMessage(chatId, '✅ Producto agregado\n1️⃣ Seguir editando\n2️⃣ Terminar');
       break;
     }
+  }
   } catch (error) {
     console.error('Error en el manejo de mensaje:', error);
     console.error('Estado actual:', JSON.stringify(estado, null, 2));
