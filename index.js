@@ -786,7 +786,8 @@ bot.on('message', async (msg) => {
   let resultadoEliminar;
   let resultadoFecha;
 
-  switch (estado.paso) {
+  try {
+    switch (estado.paso) {
     case 'inicio':
       if (texto === '1') {
         estados[chatId] = { paso: 'nombre', productos: [], cantidades: [], codigos: [] };
@@ -1630,21 +1631,36 @@ bot.on('message', async (msg) => {
       break;
 
     case 'producto':
-      const resultados = buscarProductos(texto);
-      console.log(`Resultados encontrados para "${texto}":`, resultados.length);
+      console.log(`[DEBUG] case 'producto': texto="${texto}", estado.paso="${estado.paso}"`);
+      console.log(`[DEBUG] Estado completo:`, JSON.stringify(estado, null, 2));
       
-      if (resultados.length > 0) {
-        estado.opciones = resultados;
-        estado.paso = 'esperandoSeleccion';
-        const opciones = resultados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
-        await enviarMensajeLargo(chatId, 
-          `🔍 Opciones encontradas:\n${opciones}\n\nSelecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
-          { parse_mode: 'Markdown' }
-        );
-      } else {
-        estado.paso = 'productoSinCoincidencia';
-        estado.entradaManual = texto;
-        bot.sendMessage(chatId, '❌ No se encontró ninguna coincidencia.\n¿Qué deseas hacer?\n1️⃣ Buscar otra vez\n2️⃣ Escribir producto manual');
+      try {
+        const resultados = buscarProductos(texto);
+        console.log(`Resultados encontrados para "${texto}":`, resultados.length);
+        
+        if (resultados.length > 0) {
+          estado.opciones = resultados;
+          estado.paso = 'esperandoSeleccion';
+          const opciones = resultados.map((p, i) => `${i + 1}. ${p.memo}`).join('\n');
+          await enviarMensajeLargo(chatId, 
+            `🔍 Opciones encontradas:\n${opciones}\n\nSelecciona un producto escribiendo su número o escribe una nueva búsqueda si no encuentras lo que buscas.`,
+            { parse_mode: 'Markdown' }
+          );
+        } else {
+          estado.paso = 'productoSinCoincidencia';
+          estado.entradaManual = texto;
+          bot.sendMessage(chatId, '❌ No se encontró ninguna coincidencia.\n¿Qué deseas hacer?\n1️⃣ Buscar otra vez\n2️⃣ Escribir producto manual');
+        }
+      } catch (error) {
+        console.error(`[ERROR] Error en case 'producto' para texto "${texto}":`, error);
+        console.error('Stack trace:', error.stack);
+        // Mantener el estado en 'producto' para que el usuario pueda reintentar
+        estado.paso = 'producto';
+        try {
+          await bot.sendMessage(chatId, '❌ Error al buscar el producto. Por favor, intenta escribir el nombre del producto nuevamente.');
+        } catch (sendError) {
+          console.error('Error al enviar mensaje de error en producto:', sendError.message);
+        }
       }
       break;
 
@@ -1719,6 +1735,20 @@ bot.on('message', async (msg) => {
       estado.paso = 'continuarEdicion';
       bot.sendMessage(chatId, '✅ Producto agregado\n1️⃣ Seguir editando\n2️⃣ Terminar');
       break;
+    }
+  } catch (error) {
+    console.error('Error en el manejo de mensaje:', error);
+    console.error('Estado actual:', JSON.stringify(estado, null, 2));
+    console.error('Texto recibido:', texto);
+    console.error('Chat ID:', chatId);
+    
+    // Mantener el estado para que el usuario pueda continuar
+    // No eliminar estados[chatId] para evitar pérdida de estado
+    
+    try {
+      await bot.sendMessage(chatId, '❌ Ocurrió un error al procesar tu mensaje. Por favor, intenta nuevamente o escribe "000" para reiniciar.');
+    } catch (sendError) {
+      console.error('Error al enviar mensaje de error:', sendError.message);
     }
   }
 });
