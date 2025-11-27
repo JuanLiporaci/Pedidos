@@ -559,6 +559,41 @@ async function guardarEnSheets(data) {
     'Usuario': data.usuario,
     'Fecha de subida': fechaSubida
   });
+
+  // Agregar el pedido a la hoja Status
+  let hojaStatus;
+  try {
+    hojaStatus = doc.sheetsByTitle['Status'];
+  } catch (error) {
+    // La hoja no existe, crearla
+    hojaStatus = null;
+  }
+
+  if (!hojaStatus) {
+    hojaStatus = await doc.addSheet({
+      title: 'Status',
+      headerValues: [
+        'Nombre del Cliente',
+        'Productos',
+        'Cantidad',
+        'codigo',
+        'Notas',
+        'Fecha de Despacho',
+        'status'
+      ]
+    });
+  }
+
+  // Agregar el pedido a la hoja Status
+  await hojaStatus.addRow({
+    'Nombre del Cliente': data.nombre,
+    'Productos': data.productos.join('\n'),
+    'Cantidad': data.cantidades.join('\n'),
+    'codigo': data.codigos.join('\n'),
+    'Notas': data.nota || '',
+    'Fecha de Despacho': data.fecha,
+    'status': '' // Se deja vacío para modificación manual
+  });
 }
 
 // Obtener pedidos del usuario
@@ -701,22 +736,34 @@ function procesarFecha(texto) {
     return { error: '❌ Fecha inválida. Usa el formato MM/DD.' };
   }
 
-  // Validar que el mes ingresado coincida con el mes actual
   const mesPedidoNum = parseInt(mesPedido, 10);
-  if (mesPedidoNum !== mesActual) {
-    return { error: `❌ Solo puedes ingresar fechas del mes actual. El mes actual es ${mesActual.toString().padStart(2, '0')}.` };
+  
+  // Determinar el año de la fecha del pedido
+  // Si el mes es menor al mes actual, asumimos que es del año siguiente
+  // Si el mes es igual o mayor al mes actual, es del año actual
+  let anioPedido = anioHoy;
+  if (mesPedidoNum < mesActual) {
+    anioPedido = anioHoy + 1;
   }
 
   const fechaDespacho = new Date(
-    `${anioHoy}-${mesPedido.padStart(2, '0')}-${diaPedido.padStart(2, '0')}`
+    `${anioPedido}-${mesPedido.padStart(2, '0')}-${diaPedido.padStart(2, '0')}`
   );
   
   if (isNaN(fechaDespacho.getTime())) {
     return { error: '❌ Fecha inválida. Usa el formato MM/DD.' };
   }
 
+  // Validar que la fecha no sea en el pasado (comparar con fecha de hoy sin horas)
+  const hoySinHora = new Date(anioHoy, fechaHoy.getMonth(), fechaHoy.getDate());
+  const fechaDespachoSinHora = new Date(anioPedido, mesPedidoNum - 1, parseInt(diaPedido, 10));
+  
+  if (fechaDespachoSinHora < hoySinHora) {
+    return { error: `❌ No puedes ingresar fechas pasadas. El mes actual es ${mesActual.toString().padStart(2, '0')}.` };
+  }
+
   return {
-    fecha: `${mesPedido.padStart(2, '0')}/${diaPedido.padStart(2, '0')}/${anioHoy}`,
+    fecha: `${mesPedido.padStart(2, '0')}/${diaPedido.padStart(2, '0')}/${anioPedido}`,
     error: null
   };
 }
@@ -1858,6 +1905,55 @@ async function actualizarProductosEnPedido(data) {
       'Notas': data.nota || '',
       'Usuario': usuario,
       'Fecha de subida': fechaSubida
+    });
+
+    // 5. Actualizar la hoja Status
+    let hojaStatus;
+    try {
+      hojaStatus = doc.sheetsByTitle['Status'];
+    } catch (error) {
+      // La hoja no existe, crearla
+      hojaStatus = null;
+    }
+
+    if (!hojaStatus) {
+      hojaStatus = await doc.addSheet({
+        title: 'Status',
+        headerValues: [
+          'Nombre del Cliente',
+          'Productos',
+          'Cantidad',
+          'codigo',
+          'Notas',
+          'Fecha de Despacho',
+          'status'
+        ]
+      });
+    }
+
+    // Buscar y eliminar la fila antigua en Status (si existe)
+    const rowsStatus = await hojaStatus.getRows();
+    const fechaDespacho = data.fecha || moment().format('MM/DD/YYYY');
+    
+    // Buscar la fila que coincida con el nombre del cliente y la fecha
+    const statusIndex = rowsStatus.findIndex(r => 
+      r['Nombre del Cliente'] === data.nombre &&
+      r['Fecha de Despacho'] === fechaDespacho
+    );
+    
+    if (statusIndex >= 0) {
+      await rowsStatus[statusIndex].delete();
+    }
+
+    // Agregar la fila actualizada en Status
+    await hojaStatus.addRow({
+      'Nombre del Cliente': data.nombre,
+      'Productos': data.productos.join('\n'),
+      'Cantidad': data.cantidades.join('\n'),
+      'codigo': (data.codigos || Array(data.productos.length).fill('')).join('\n'),
+      'Notas': data.nota || '',
+      'Fecha de Despacho': fechaDespacho,
+      'status': '' // Se deja vacío para modificación manual
     });
 
     return true;
