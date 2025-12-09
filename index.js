@@ -594,6 +594,41 @@ async function guardarEnSheets(data) {
     'Fecha de Despacho': data.fecha,
     'status': '' // Se deja vacío para modificación manual
   });
+
+  // Agregar el pedido a la hoja Maria Walker
+  let hojaMariaWalker;
+  try {
+    hojaMariaWalker = doc.sheetsByTitle['Maria Walker'];
+  } catch (error) {
+    // La hoja no existe, crearla
+    hojaMariaWalker = null;
+  }
+
+  if (!hojaMariaWalker) {
+    hojaMariaWalker = await doc.addSheet({
+      title: 'Maria Walker',
+      headerValues: [
+        'Nombre del Cliente',
+        'Productos',
+        'Cantidad',
+        'Fecha de Despacho',
+        'codigo',
+        'Notas',
+        'Usuario'
+      ]
+    });
+  }
+
+  // Agregar el pedido a la hoja Maria Walker
+  await hojaMariaWalker.addRow({
+    'Nombre del Cliente': data.nombre,
+    'Productos': data.productos.join('\n'),
+    'Cantidad': data.cantidades.join('\n'),
+    'Fecha de Despacho': data.fecha,
+    'codigo': data.codigos.join('\n'),
+    'Notas': data.nota || '',
+    'Usuario': data.usuario
+  });
 }
 
 // Obtener pedidos del usuario
@@ -1954,6 +1989,54 @@ async function actualizarProductosEnPedido(data) {
       'Notas': data.nota || '',
       'Fecha de Despacho': fechaDespacho,
       'status': '' // Se deja vacío para modificación manual
+    });
+
+    // 6. Actualizar la hoja Maria Walker
+    let hojaMariaWalker;
+    try {
+      hojaMariaWalker = doc.sheetsByTitle['Maria Walker'];
+    } catch (error) {
+      // La hoja no existe, crearla
+      hojaMariaWalker = null;
+    }
+
+    if (!hojaMariaWalker) {
+      hojaMariaWalker = await doc.addSheet({
+        title: 'Maria Walker',
+        headerValues: [
+          'Nombre del Cliente',
+          'Productos',
+          'Cantidad',
+          'Fecha de Despacho',
+          'codigo',
+          'Notas',
+          'Usuario'
+        ]
+      });
+    }
+
+    // Buscar y eliminar la fila antigua en Maria Walker (si existe)
+    const rowsMariaWalker = await hojaMariaWalker.getRows();
+    
+    // Buscar la fila que coincida con el nombre del cliente y la fecha
+    const mariaWalkerIndex = rowsMariaWalker.findIndex(r => 
+      r['Nombre del Cliente'] === data.nombre &&
+      r['Fecha de Despacho'] === fechaDespacho
+    );
+    
+    if (mariaWalkerIndex >= 0) {
+      await rowsMariaWalker[mariaWalkerIndex].delete();
+    }
+
+    // Agregar la fila actualizada en Maria Walker
+    await hojaMariaWalker.addRow({
+      'Nombre del Cliente': data.nombre,
+      'Productos': data.productos.join('\n'),
+      'Cantidad': data.cantidades.join('\n'),
+      'Fecha de Despacho': fechaDespacho,
+      'codigo': (data.codigos || Array(data.productos.length).fill('')).join('\n'),
+      'Notas': data.nota || '',
+      'Usuario': data.usuario || 'Desconocido'
     });
 
     return true;
