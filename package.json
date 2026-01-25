@@ -1,0 +1,29 @@
+{
+  "name": "bot-de-telegram",
+  "version": "1.0.0",
+  "description": "Bot de Telegram para gestión de pedidos",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "start:robust": "node start.js",
+    "restart": "node start.js",
+    "deploy": "powershell -ExecutionPolicy Bypass -File deploy.ps1",
+    "kill-bot": "powershell -ExecutionPolicy Bypass -File kill-bot.ps1",
+    "check-status": "powershell -ExecutionPolicy Bypass -File check-status.ps1",
+    "convert-credentials": "powershell -ExecutionPolicy Bypass -File convert-credentials.ps1",
+    "verify-env": "node verificar-variables.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bot-de-telegram": "file:",
+    "google-spreadsheet": "^3.3.0",
+    "moment": "^2.30.1",
+    "node-telegram-bot-api": "^0.61.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
