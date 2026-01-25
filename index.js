@@ -11,12 +11,21 @@ let TOKEN = process.env.TELEGRAM_BOT_TOKEN ||
             process.env['TELEGRAM_BOT_TOKEN'] ||
             (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN.trim());
 
+// ⚠️ SOLUCIÓN TEMPORAL: Token hardcodeado como fallback
+// TODO: Resolver problema de Railway Runtime V2 y eliminar este fallback
+if (!TOKEN || TOKEN.trim() === '') {
+  TOKEN = '7754946488:AAH74ULTX1dAsMMyCLOKmAfj-00ft4Uguyk';
+  console.warn('⚠️ Usando token hardcodeado como fallback (Railway Runtime V2 no pasa variables)');
+  console.warn('⚠️ IMPORTANTE: Esto es temporal. Debes desactivar Railway Runtime V2');
+}
+
 // Si está usando Railway Runtime V2, puede haber problemas
 if (process.env.RAILWAY_BETA_ENABLE_RUNTIME_V2) {
   console.log('⚠️ Railway Runtime V2 detectado - puede haber problemas con variables de entorno');
+  console.log('⚠️ RECOMENDACIÓN: Desactiva Railway Runtime V2 en Settings → Runtime');
 }
 
-// Si aún no hay token, hacer debug detallado
+// Si aún no hay token después del fallback, mostrar advertencia (pero no fallar)
 if (!TOKEN || TOKEN.trim() === '') {
   console.error('\n❌ ERROR: TELEGRAM_BOT_TOKEN no está disponible en el proceso\n');
   
